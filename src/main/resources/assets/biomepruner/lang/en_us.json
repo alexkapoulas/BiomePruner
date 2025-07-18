@@ -1,0 +1,13 @@
+{
+  "itemGroup.biomepruner": "Example Mod Tab",
+  "block.biomepruner.example_block": "Example Block",
+  "item.biomepruner.example_item": "Example Item",
+
+  "biomepruner.configuration.title": "BiomePruner Configs",
+  "biomepruner.configuration.section.biomepruner.common.toml": "BiomePruner Configs",
+  "biomepruner.configuration.section.biomepruner.common.toml.title": "BiomePruner Configs",
+  "biomepruner.configuration.items": "Item List",
+  "biomepruner.configuration.logDirtBlock": "Log Dirt Block",
+  "biomepruner.configuration.magicNumberIntroduction": "Magic Number Text",
+  "biomepruner.configuration.magicNumber": "Magic Number"
+}
