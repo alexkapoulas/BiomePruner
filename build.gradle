@@ -186,3 +186,49 @@ idea {
         downloadJavadoc = true
     }
 }
+
+// ────────────────────────────────────────────────────────────────────────────────
+// NeoForge 1.21.1 – “buildAndRun” workflow helpers
+// ────────────────────────────────────────────────────────────────────────────────
+
+// This section provides a convenient way to build, deploy, and run your mod in a Prism Launcher instance.
+def prismInstance     = 'BiomePruner'
+def devWorld = 'dev'
+
+// Resolve dynamic Windows paths once per configuration run
+def prismModsDir    = System.getenv('APPDATA')     + "/PrismLauncher/instances/${prismInstance}/minecraft/mods"
+def devWorldSaveDir = System.getenv('APPDATA')     + "/PrismLauncher/instances/${prismInstance}/minecraft/saves/${devWorld}"
+def prismExe        = System.getenv('LOCALAPPDATA') + '/Programs/PrismLauncher/prismlauncher.exe'
+
+// NeoForge produces a runtime‑ready JAR via `reobfJar`; fall back to plain `jar` if you’re in an atypical setup
+def runtimeJarTask = (tasks.findByName('reobfJar') ?: tasks.getByName('jar'))
+
+// 1) Build the JAR and copy it straight into the Prism instance
+tasks.register('deployToPrism', Copy) {
+    dependsOn runtimeJarTask
+    from      runtimeJarTask
+    into      prismModsDir
+}
+
+// 2) Nuke the test‑world’s region & entity data
+tasks.register('clearDevRegion', Delete) {
+
+    delete "${devWorldSaveDir}/region",
+            "${devWorldSaveDir}/entities",
+            "${devWorldSaveDir}/DIM-1/entities",
+            "${devWorldSaveDir}/DIM1/entities"
+
+    doFirst { println "Cleaning dev world under: $devWorldSaveDir" } // Delete ignores missing paths
+}
+
+// 3) Fire up the Prism instance once everything is ready
+tasks.register('runPrism', Exec) {
+    dependsOn 'deployToPrism', 'clearDevRegion'
+    commandLine prismExe, '-l', prismInstance, '-w', 'dev'
+}
+
+// 4) One‑liner umbrella task you’ll actually call from the CLI / IDE
+tasks.register('buildAndRun') {
+    description = 'Rebuilds the mod, deploys it, wipes the test world, and launches Prism.'
+    dependsOn   'runPrism'
+}
