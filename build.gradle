@@ -210,15 +210,34 @@ tasks.register('deployToPrism', Copy) {
     into      prismModsDir
 }
 
-// 2) Nuke the test‑world’s region & entity data
+// 2) Nuke the test‑world’s data **except** region files holding the spawn chunks
 tasks.register('clearDevRegion', Delete) {
 
-    delete "${devWorldSaveDir}/region",
-            "${devWorldSaveDir}/entities",
+    /**
+     * Deletes every .mca except those that cover the spawn chunks.
+     * Override with  -PspawnRegions=r.0.0.mca,r.0.-1.mca   if your spawn sits
+     * in multiple regions or somewhere other than (0, 0).
+     */
+    def regionDir = file("${devWorldSaveDir}/region")
+    def spawnRegionFiles = (project.hasProperty('spawnRegions')
+            ? project.property('spawnRegions').split(',').collect { it.trim() }
+            : ['r.0.0.mca'])          // default: region containing (0‑511, 0‑511)
+
+    // Delete every .mca except those listed above
+    delete fileTree(regionDir) {
+        include '*.mca'
+        exclude spawnRegionFiles as Iterable<String>
+    }
+
+    // Purge entity data completely – faster than regenerating terrain
+    delete "${devWorldSaveDir}/entities",
             "${devWorldSaveDir}/DIM-1/entities",
             "${devWorldSaveDir}/DIM1/entities"
 
-    doFirst { println "Cleaning dev world under: $devWorldSaveDir" } // Delete ignores missing paths
+    doFirst {
+        println """Cleaning dev world under: $devWorldSaveDir
+        ▸ Keeping region files: ${spawnRegionFiles.join(', ')}"""
+    }
 }
 
 // 3) Fire up the Prism instance once everything is ready

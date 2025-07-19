@@ -1,8 +1,11 @@
 {
   "required": true,
-  "package": "com.example.alexthundercook.mixin",
+  "package": "com.example.alexthundercook.biomepruner.mixin",
   "compatibilityLevel": "JAVA_21",
-  "mixins": [],
+  "mixins": [
+    "MixinMultiNoiseBiomeSource",
+    "AccessorMultiNoiseBiomeSource"
+  ],
   "injectors": {
     "defaultRequire": 1
   },
