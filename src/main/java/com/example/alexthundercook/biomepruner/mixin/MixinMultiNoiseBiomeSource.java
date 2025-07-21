@@ -13,6 +13,9 @@ package com.example.alexthundercook.biomepruner.mixin;
 
 import com.example.alexthundercook.biomepruner.*;
 import net.minecraft.core.Holder;
+import net.minecraft.core.HolderLookup;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.world.level.LevelAccessor;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;

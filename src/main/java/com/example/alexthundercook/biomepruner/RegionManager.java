@@ -8,6 +8,8 @@ package com.example.alexthundercook.biomepruner;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import net.minecraft.core.Holder;
+import net.minecraft.core.RegistryAccess;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
@@ -120,6 +122,22 @@ public final class RegionManager {
     private static Holder<Biome> chooseReplacement(RegionData data,
                                                    MultiNoiseBiomeSource src,
                                                    Climate.Sampler sampler) {
+
+        // First, check if the debug config flag is enabled.
+        if (BiomePrunerConfig.USE_DEBUG_BIOME.get()) { // Assuming this is your config class/variable
+            // Attempt to get the biome from the server's fully-loaded registry.
+            Holder<Biome> debug = BiomeUtils.getRedRealm();
+
+            if (debug != null) {
+                // If this fires, the biome is registered correctly and can be used.
+                BiomePrunerMod.LOGGER.warn("Debug mode is ON. Using debug biome: {}", debug.getKey().location());
+                return debug;
+            } else {
+                // If you still see this message, it confirms a fundamental problem with your
+                // biome registration in ModBiomes.java or BiomePrunerMod.java.
+                BiomePrunerMod.LOGGER.error("Debug mode is ON, but the Red Realm biome could not be found in the server's biome registry!");
+            }
+        }
 
         final int samplingY = BiomePrunerConfig.SAMPLING_Y_LEVEL.get() >> 2;
         final int[][] DIRS  = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };

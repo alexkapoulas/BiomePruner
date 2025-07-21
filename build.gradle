@@ -221,7 +221,7 @@ tasks.register('clearDevRegion', Delete) {
     def regionDir = file("${devWorldSaveDir}/region")
     def spawnRegionFiles = (project.hasProperty('spawnRegions')
             ? project.property('spawnRegions').split(',').collect { it.trim() }
-            : ['r.0.0.mca'])          // default: region containing (0‑511, 0‑511)
+            : ['r.10000.10000.mca'])          // default: region containing (0‑511, 0‑511)
 
     // Delete every .mca except those listed above
     delete fileTree(regionDir) {

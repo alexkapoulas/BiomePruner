@@ -19,6 +19,7 @@ public final class BiomePrunerConfig {
     public static final ModConfigSpec.IntValue      MAX_REGION_CELLS;
     public static final ModConfigSpec.IntValue      SAMPLING_Y_LEVEL;
     public static final ModConfigSpec.BooleanValue  DEBUG_CHAT;
+    public static final ModConfigSpec.BooleanValue  USE_DEBUG_BIOME;
     public static final ModConfigSpec.ConfigValue<List<? extends String>> BIOME_BLACKLIST;
 
     static {
@@ -35,6 +36,10 @@ public final class BiomePrunerConfig {
         DEBUG_CHAT = b.comment(
                         "Emit clickable chat when micro‑biomes are merged")
                 .define("debugChat", true);
+
+        USE_DEBUG_BIOME = b.comment(
+                            "Forces the use of the Red Realm debug biome for all pruned regions.")
+                .define("useDebugBiome", false);
 
         BIOME_BLACKLIST = b.comment(
                         "List of biome resource locations that SHALL NOT be analysed or replaced\n" +

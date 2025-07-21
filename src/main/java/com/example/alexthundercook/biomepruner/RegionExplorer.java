@@ -8,6 +8,7 @@ package com.example.alexthundercook.biomepruner;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import net.minecraft.core.Holder;
+import net.minecraft.core.RegistryAccess;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
