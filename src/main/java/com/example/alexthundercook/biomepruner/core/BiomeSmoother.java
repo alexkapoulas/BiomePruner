@@ -61,6 +61,8 @@ public class BiomeSmoother {
                                           Holder<Biome> vanillaBiome,
                                           MultiNoiseBiomeSource source,
                                           Climate.Sampler sampler) {
+        // Note: Detailed debug logging removed - issue resolved
+        
         // Start performance tracking if enabled
         PerformanceTracker tracker = ConfigManager.isPerformanceLoggingEnabled() ?
                 PerformanceTracker.getInstance() : null;
@@ -98,6 +100,8 @@ public class BiomeSmoother {
                                                             Holder<Biome> vanillaBiome,
                                                             MultiNoiseBiomeSource source,
                                                             Climate.Sampler sampler) {
+        // Note: Detailed debug logging removed - issue resolved
+        
         PerformanceTracker tracker = ConfigManager.isPerformanceLoggingEnabled() ?
                 PerformanceTracker.getInstance() : null;
 
@@ -105,6 +109,8 @@ public class BiomeSmoother {
         Boolean cachedMismatch = regionCache.getBiomeMismatch(x, z, vanillaBiome);
         if (cachedMismatch != null && cachedMismatch) {
             // We know this vanilla biome != surface biome at this position
+            // IMPORTANT: Track biome mismatch cache hits
+            regionCache.recordCacheHit();
             return new BiomeRegionCache.BiomeResult(vanillaBiome, false);
         }
 
@@ -137,13 +143,40 @@ public class BiomeSmoother {
             // Validate that cached result is for the same biome
             // (different biomes at same x,z but different Y levels should not share cache)
             if (surfaceResult.biome().equals(vanillaBiome) || surfaceResult.biome().equals(surfaceBiome)) {
+                // IMPORTANT: Track surface cache hits
+                regionCache.recordCacheHit();
                 return surfaceResult;
             }
             // Cache hit but for different biome - ignore and continue
         }
 
-        // Check if we already know this is a large biome
-        if (regionCache.isKnownLargeBiome(x, z, surfaceBiome)) {
+        // Check spatial cache for nearby flood fill results first (performance boost)
+        // Note: Spatial cache hits are tracked within getNearbyFloodFillResult
+        var spatialResult = regionCache.getNearbyFloodFillResult(x, z, surfaceBiome);
+        if (spatialResult != null) {
+            BiomeRegionCache.BiomeResult cachedResult;
+            if (spatialResult.isLarge()) {
+                cachedResult = new BiomeRegionCache.BiomeResult(vanillaBiome, false);
+            } else {
+                cachedResult = new BiomeRegionCache.BiomeResult(spatialResult.replacement(), true);
+            }
+            // Store in surface cache for future surface biome matches
+            regionCache.storeSurfaceCacheResult(x, z, cachedResult);
+            return cachedResult;
+        }
+
+        // Check if we already know this specific area contains a large biome
+        if (regionCache.isKnownLargeBiomeArea(x, z, surfaceBiome)) {
+            // Debug logging for the problematic area
+            if ((x == 10890 && z == 17394) || 
+                (Math.abs(x - 10890) <= 50 && Math.abs(z - 17394) <= 50 && getBiomeName(surfaceBiome).equals("Hot Shrubland"))) {
+                if (ConfigManager.isDebugMessagesEnabled()) {
+                    LOGGER.info("BiomePruner: BLOCKED by large biome area cache - {} at {},{},{}", 
+                        getBiomeName(surfaceBiome), x, y, z);
+                }
+            }
+            // IMPORTANT: Track large biome area cache hits
+            regionCache.recordCacheHit();
             BiomeRegionCache.BiomeResult largeBiomeResult = new BiomeRegionCache.BiomeResult(vanillaBiome, false);
             // Cache this result for future surface matches
             regionCache.storeSurfaceCacheResult(x, z, largeBiomeResult);
@@ -156,6 +189,8 @@ public class BiomeSmoother {
         // Check if another thread already completed it
         BiomeRegionCache.FloodFillResult existingResult = task.getResult();
         if (existingResult != null) {
+            // IMPORTANT: Track flood fill cache hits
+            regionCache.recordCacheHit();
             BiomeRegionCache.BiomeResult cachedResult;
             if (existingResult.isLarge()) {
                 cachedResult = new BiomeRegionCache.BiomeResult(vanillaBiome, false);
@@ -174,6 +209,15 @@ public class BiomeSmoother {
         }
 
         // We need to run the flood fill
+        // Rate-limited logging to prevent spam (log at most once every 5 seconds)
+        if (ConfigManager.isDebugMessagesEnabled()) {
+            long currentTime = System.currentTimeMillis();
+            if (currentTime - lastFloodFillLogTime > FLOOD_FILL_LOG_INTERVAL_MS) {
+                lastFloodFillLogTime = currentTime;
+                LOGGER.info("BiomePruner: Starting flood fill for {} at {},{},{} (surface biome: {}) [Rate limited - may be starting many more]",
+                    getBiomeName(vanillaBiome), x, y, z, getBiomeName(surfaceBiome));
+            }
+        }
         try {
             runFloodFillAndComplete(x, surfaceY, z, surfaceBiome, source, sampler, task);
 
@@ -216,16 +260,16 @@ public class BiomeSmoother {
         PerformanceTracker.Timer floodFillTimer = tracker != null ?
                 tracker.startTimer(PerformanceTracker.Section.FLOOD_FILL) : null;
 
-        int threshold = ConfigManager.getMicroBiomeThreshold();
+        // Convert block threshold to biome coordinate threshold (each biome coordinate = 16 blocks)
+        int threshold = ConfigManager.getMicroBiomeThreshold() / 16;
         Set<Pos2D> visited = new HashSet<>();
         Queue<Pos2D> queue = new ArrayDeque<>();
-        
-        // Aggressive early bailout - check if this looks like a large biome immediately
-        int earlyBailoutSampleSize = Math.min(8, threshold / 4);
-        int largeBiomeIndicators = 0;
 
         try {
-            Pos2D start = new Pos2D(startX, startZ);
+            // Convert to biome coordinates (4x4 block grid) for accurate flood fill
+            int biomeStartX = startX >> 2;
+            int biomeStartZ = startZ >> 2;
+            Pos2D start = new Pos2D(biomeStartX, biomeStartZ);
             queue.offer(start);
             visited.add(start);
 
@@ -233,34 +277,16 @@ public class BiomeSmoother {
             while (!queue.isEmpty() && visited.size() <= threshold) {
                 Pos2D current = queue.poll();
 
-                // Super aggressive early bailout - check after very few samples
-                if (visited.size() <= earlyBailoutSampleSize) {
-                    int neighborsFound = 0;
-                    // Quick scan to estimate biome connectivity
-                    for (int dx = -2; dx <= 2; dx += 2) {
-                        for (int dz = -2; dz <= 2; dz += 2) {
-                            if (dx == 0 && dz == 0) continue;
-                            
-                            Pos2D testPos = new Pos2D(current.x() + dx, current.z() + dz);
-                            int testY = heightmapCache.getHeight(testPos.x(), testPos.z());
-                            Holder<Biome> testBiome = getSurfaceBiome(testPos.x(), testPos.z(), testY, source, sampler);
-                            
-                            if (testBiome.equals(targetBiome)) {
-                                neighborsFound++;
-                            }
-                        }
-                    }
-                    
-                    // If we find many same-biome neighbors in distant positions, it's likely large
-                    if (neighborsFound >= 6) { // 6+ out of 12 distant neighbors
-                        largeBiomeIndicators++;
-                        if (largeBiomeIndicators >= 2) {
-                            // Very likely a large biome - bail out immediately
-                            regionCache.completeFloodFill(startX, startZ, targetBiome,
-                                    Collections.emptySet(), true, targetBiome);
-                            return;
-                        }
-                    }
+                // Simplified early bailout - only check when we're very close to threshold
+                if (visited.size() > threshold * 0.95 && queue.size() > visited.size()) {
+                    // Large biome detected - bail out immediately
+                    regionCache.completeFloodFill(startX, startZ, targetBiome,
+                            Collections.emptySet(), true, targetBiome);
+                    // Mark this area as containing a large biome
+                    regionCache.markLargeBiomeArea(startX, startZ, targetBiome);
+                    // Store in spatial cache with large radius for maximum cache hits
+                    regionCache.storeSpatialFloodFillResult(startX, startZ, targetBiome, true, targetBiome, 128);
+                    return;
                 }
 
                 // Standard flood fill for confirmed small areas
@@ -271,10 +297,12 @@ public class BiomeSmoother {
                         Pos2D neighbor = new Pos2D(current.x() + dx, current.z() + dz);
 
                         if (!visited.contains(neighbor)) {
-                            // Use exact height - approximation was adding overhead
-                            int neighborY = heightmapCache.getHeight(neighbor.x(), neighbor.z());
+                            // Convert biome coordinates back to block coordinates for height/biome lookup
+                            int neighborBlockX = neighbor.x() << 2;
+                            int neighborBlockZ = neighbor.z() << 2;
+                            int neighborY = heightmapCache.getHeight(neighborBlockX, neighborBlockZ);
                             Holder<Biome> neighborBiome = getSurfaceBiome(
-                                    neighbor.x(), neighbor.z(), neighborY, source, sampler);
+                                    neighborBlockX, neighborBlockZ, neighborY, source, sampler);
 
                             if (neighborBiome.equals(targetBiome)) {
                                 visited.add(neighbor);
@@ -284,14 +312,18 @@ public class BiomeSmoother {
                                 if (visited.size() > threshold) {
                                     regionCache.completeFloodFill(startX, startZ, targetBiome,
                                             Collections.emptySet(), true, targetBiome);
+                                    // Mark this area as containing a large biome
+                                    regionCache.markLargeBiomeArea(startX, startZ, targetBiome);
                                     return;
                                 }
                                 
-                                // More aggressive progressive bailout
-                                if (visited.size() > threshold / 3 && queue.size() > visited.size() * 0.4) {
-                                    // Early detection of expanding biomes
+                                // Simple progressive bailout - avoid processing huge biomes
+                                if (visited.size() > threshold * 0.8 && queue.size() > threshold * 0.5) {
+                                    // Large expanding biome detected
                                     regionCache.completeFloodFill(startX, startZ, targetBiome,
                                             Collections.emptySet(), true, targetBiome);
+                                    // Mark this area as containing a large biome
+                                    regionCache.markLargeBiomeArea(startX, startZ, targetBiome);
                                     return;
                                 }
                             }
@@ -314,6 +346,12 @@ public class BiomeSmoother {
         }
 
         regionCache.completeFloodFill(startX, startZ, targetBiome, visited, false, replacement);
+        
+        // Debug logging for completed micro biome
+        if (ConfigManager.isDebugMessagesEnabled()) {
+            LOGGER.info("BiomePruner: Completed micro biome flood fill for {} at {},{} - size: {}, replacement: {}",
+                getBiomeName(targetBiome), startX, startZ, visited.size(), getBiomeName(replacement));
+        }
         
         // Store in spatial cache for nearby position reuse
         int detectedRadius = (int) Math.sqrt(visited.size()); // Approximate radius from area
@@ -341,24 +379,30 @@ public class BiomeSmoother {
                     Pos2D neighbor = new Pos2D(pos.x() + dx, pos.z() + dz);
 
                     if (!microBiomePositions.contains(neighbor)) {
+                        // Convert biome coordinates to block coordinates
+                        int neighborBlockX = neighbor.x() << 2;
+                        int neighborBlockZ = neighbor.z() << 2;
                         // Use height approximation for neighbor search performance
-                        int height = getApproximateHeight(neighbor.x(), neighbor.z(), estimatedSurfaceY);
+                        int height = getApproximateHeight(neighborBlockX, neighborBlockZ, estimatedSurfaceY);
                         Holder<Biome> neighborBiome = getSurfaceBiome(
-                                neighbor.x(), neighbor.z(), height, source, sampler);
+                                neighborBlockX, neighborBlockZ, height, source, sampler);
 
-                        // Always count for fallback
-                        allNeighborCounts.merge(neighborBiome, 1, Integer::sum);
+                        // Skip if neighbor is the same as original biome (prevents X->X replacements)
+                        if (!neighborBiome.equals(originalBiome)) {
+                            // Always count for fallback
+                            allNeighborCounts.merge(neighborBiome, 1, Integer::sum);
 
-                        // Only count valid replacements for primary selection
-                        if (ConfigManager.canUseAsReplacement(neighborBiome)) {
-                            validNeighborCounts.merge(neighborBiome, 1, Integer::sum);
+                            // Only count valid replacements for primary selection
+                            if (ConfigManager.canUseAsReplacement(neighborBiome)) {
+                                validNeighborCounts.merge(neighborBiome, 1, Integer::sum);
+                            }
                         }
                     }
                 }
             }
         }
 
-        // First try: Find most common valid neighbor
+        // First try: Find most common valid neighbor (excluding original biome)
         Optional<Holder<Biome>> validChoice = validNeighborCounts.entrySet().stream()
                 .max(Map.Entry.comparingByValue())
                 .map(Map.Entry::getKey);
@@ -367,11 +411,20 @@ public class BiomeSmoother {
             return validChoice.get();
         }
 
-        // Fallback: All neighbors are blacklisted, use dominant anyway
-        return allNeighborCounts.entrySet().stream()
+        // Fallback: All neighbors are blacklisted, use dominant anyway (excluding original)
+        Optional<Holder<Biome>> fallbackChoice = allNeighborCounts.entrySet().stream()
                 .max(Map.Entry.comparingByValue())
-                .map(Map.Entry::getKey)
-                .orElse(originalBiome);
+                .map(Map.Entry::getKey);
+        
+        if (fallbackChoice.isPresent()) {
+            return fallbackChoice.get();
+        }
+        
+        // Ultimate fallback: No different neighbors found, keep original (should not replace)
+        // This case indicates the biome is not actually a micro biome - likely a detection error
+        LOGGER.warn("BiomePruner: Found micro biome {} with no different neighbors at flood fill origin. "
+                + "This suggests fragmented detection of a larger biome.", getBiomeName(originalBiome));
+        return originalBiome;
     }
 
     /**
@@ -494,6 +547,10 @@ public class BiomeSmoother {
 
     // Rate limiting for cave biome detection logging
     private static volatile boolean hasLoggedCaveSkip = false;
+    
+    // Rate limiting for flood fill start logging
+    private static volatile long lastFloodFillLogTime = 0;
+    private static final long FLOOD_FILL_LOG_INTERVAL_MS = 5000; // Log at most once every 5 seconds
 
     /**
      * Get estimated surface height from a set of positions (avoids individual height calculations)
@@ -506,7 +563,10 @@ public class BiomeSmoother {
         // For micro biomes, use height from first position as estimate
         // This avoids expensive height calculations for every position
         Pos2D first = positions.iterator().next();
-        return heightmapCache.getHeight(first.x(), first.z());
+        // Convert biome coordinates to block coordinates
+        int blockX = first.x() << 2;
+        int blockZ = first.z() << 2;
+        return heightmapCache.getHeight(blockX, blockZ);
     }
     
     /**
@@ -590,11 +650,15 @@ public class BiomeSmoother {
                                                        Holder<Biome> targetBiome,
                                                        MultiNoiseBiomeSource source,
                                                        Climate.Sampler sampler) {
-        int threshold = ConfigManager.getMicroBiomeThreshold();
+        // Use biome coordinate threshold for consistency with actual flood fill
+        int threshold = ConfigManager.getMicroBiomeThreshold() / 16;
         Set<Pos2D> visited = new HashSet<>();
         Queue<Pos2D> queue = new ArrayDeque<>();
 
-        Pos2D start = new Pos2D(startX, startZ);
+        // Convert to biome coordinates for consistent behavior
+        int biomeStartX = startX >> 2;
+        int biomeStartZ = startZ >> 2;
+        Pos2D start = new Pos2D(biomeStartX, biomeStartZ);
         queue.offer(start);
         visited.add(start);
 
@@ -610,10 +674,13 @@ public class BiomeSmoother {
                     Pos2D neighbor = new Pos2D(current.x() + dx, current.z() + dz);
 
                     if (!visited.contains(neighbor)) {
+                        // Convert biome coordinates back to block coordinates
+                        int neighborBlockX = neighbor.x() << 2;
+                        int neighborBlockZ = neighbor.z() << 2;
                         // Get biome at neighbor surface position, skipping cave biomes
-                        int neighborY = heightmapCache.getHeight(neighbor.x(), neighbor.z());
+                        int neighborY = heightmapCache.getHeight(neighborBlockX, neighborBlockZ);
                         Holder<Biome> neighborBiome = getSurfaceBiome(
-                                neighbor.x(), neighbor.z(), neighborY, source, sampler);
+                                neighborBlockX, neighborBlockZ, neighborY, source, sampler);
 
                         if (neighborBiome.equals(targetBiome)) {
                             visited.add(neighbor);
@@ -621,8 +688,8 @@ public class BiomeSmoother {
 
                             // Early exit if we exceed threshold
                             if (visited.size() > threshold) {
-                                // Large biome
-                                return new DebugFloodFillResult(visited.size(), false, null);
+                                // Large biome - convert to block count for display
+                                return new DebugFloodFillResult(visited.size() * 16, false, null);
                             }
                         }
                     }
@@ -632,6 +699,7 @@ public class BiomeSmoother {
 
         // Micro biome - find replacement
         Holder<Biome> replacement = findDominantNeighbor(visited, targetBiome, source, sampler);
-        return new DebugFloodFillResult(visited.size(), true, replacement);
+        // Convert biome coordinate count to block count for debug display
+        return new DebugFloodFillResult(visited.size() * 16, true, replacement);
     }
 }

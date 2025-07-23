@@ -42,6 +42,13 @@ public class BiomePrunerConfig {
     public final ModConfigSpec.BooleanValue useBicubicInterpolation;
     public final ModConfigSpec.BooleanValue opportunisticBatchCalculation;
 
+    // Testing settings
+    public final ModConfigSpec.BooleanValue automatedTestingEnabled;
+    public final ModConfigSpec.ConfigValue<List<? extends String>> testCoordinates;
+    public final ModConfigSpec.IntValue performanceTestDuration;
+    public final ModConfigSpec.IntValue performanceTestSpeed;
+    public final ModConfigSpec.ConfigValue<String> testResultsFile;
+
     private BiomePrunerConfig(ModConfigSpec.Builder builder) {
         builder.push("general");
 
@@ -162,6 +169,36 @@ public class BiomePrunerConfig {
         opportunisticBatchCalculation = builder
                 .comment("Batch calculate nearby points when calculating one")
                 .define("opportunisticBatchCalculation", true);
+
+        builder.pop();
+
+        builder.push("testing");
+
+        automatedTestingEnabled = builder
+                .comment("Enable automated testing on server startup")
+                .define("automatedTestingEnabled", false);
+
+        testCoordinates = builder
+                .comment("Test coordinates in format 'x,y,z,expectedBiome' (e.g., '1000,64,2000,minecraft:plains')")
+                .defineList("testCoordinates",
+                        Arrays.asList(
+                                "10890,64,17394,biomesoplenty:hot_shrubland",
+                                "10900,64,17400,biomesoplenty:hot_shrubland",
+                                "10850,64,17350,biomesoplenty:hot_shrubland"
+                        ),
+                        obj -> obj instanceof String && ((String)obj).split(",").length == 4);
+
+        performanceTestDuration = builder
+                .comment("Duration in seconds for performance stress test")
+                .defineInRange("performanceTestDuration", 60, 10, 300);
+
+        performanceTestSpeed = builder
+                .comment("Movement speed in blocks per second for performance test")
+                .defineInRange("performanceTestSpeed", 10, 1, 50);
+
+        testResultsFile = builder
+                .comment("Output file path for test results (relative to game directory)")
+                .define("testResultsFile", "biomepruner_test_results.json");
 
         builder.pop();
     }

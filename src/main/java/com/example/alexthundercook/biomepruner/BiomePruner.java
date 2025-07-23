@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import com.example.alexthundercook.biomepruner.config.BiomePrunerConfig;
 import com.example.alexthundercook.biomepruner.config.ConfigManager;
 import com.example.alexthundercook.biomepruner.command.BiomePrunerCommands;
+import com.example.alexthundercook.biomepruner.test.TestEventHandler;
 
 @Mod(BiomePruner.MOD_ID)
 public class BiomePruner {
@@ -27,8 +28,9 @@ public class BiomePruner {
         // Register mod lifecycle events
         modEventBus.addListener(this::commonSetup);
 
-        // Register to the game event bus for command registration
+        // Register to the game event bus for command registration and testing
         NeoForge.EVENT_BUS.register(this);
+        NeoForge.EVENT_BUS.register(new TestEventHandler());
 
         LOGGER.info("BiomePruner initialized");
     }

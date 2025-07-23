@@ -24,3 +24,13 @@ runs
 run-data
 
 repo
+
+# Python automation output directories
+claude_tooling/test_output/
+claude_tooling/build_output/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc

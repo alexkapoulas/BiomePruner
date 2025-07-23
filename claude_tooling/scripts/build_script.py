@@ -12,8 +12,15 @@ import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
+# Output directory configuration - adjust for new claude_tooling structure
+BUILD_OUTPUT_DIR = Path(__file__).parent.parent / "build_output"
+BUILD_OUTPUT_DIR.mkdir(exist_ok=True)
+
 class MinecraftModBuilder:
-    def __init__(self, project_root: str = "."):
+    def __init__(self, project_root: str = None):
+        # Default to the project root (two levels up from this script)
+        if project_root is None:
+            project_root = Path(__file__).parent.parent.parent
         self.project_root = Path(project_root).resolve()
         if not self.project_root.exists():
             raise ValueError(f"Project root does not exist: {self.project_root}")
@@ -328,7 +335,7 @@ class MinecraftModBuilder:
     def save_error_report(self, report: str, errors: List[Dict]):
         """Save error report to file for Claude Code to read"""
         try:
-            report_path = self.project_root / "build_error_report.md"
+            report_path = BUILD_OUTPUT_DIR / "build_error_report.md"
             with open(report_path, 'w', encoding='utf-8') as f:
                 f.write(report)
             print(f"\nError report saved to: {report_path}")
@@ -338,7 +345,7 @@ class MinecraftModBuilder:
 
         try:
             # Also save structured error data as JSON
-            json_path = self.project_root / "build_errors.json"
+            json_path = BUILD_OUTPUT_DIR / "build_errors.json"
 
             # Clean up errors for JSON serialization
             clean_errors = []
@@ -371,7 +378,7 @@ class MinecraftModBuilder:
 
             # Save success status
             try:
-                json_path = self.project_root / "build_errors.json"
+                json_path = BUILD_OUTPUT_DIR / "build_errors.json"
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump({'success': True, 'error_count': 0, 'errors': []}, f, indent=2)
             except Exception as e:
@@ -418,7 +425,7 @@ class MinecraftModBuilder:
 def main():
     """Main entry point"""
     # Allow specifying project root as command line argument
-    project_root = sys.argv[1] if len(sys.argv) > 1 else "."
+    project_root = sys.argv[1] if len(sys.argv) > 1 else None
 
     builder = MinecraftModBuilder(project_root)
     return builder.run()

@@ -10,6 +10,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -170,6 +171,27 @@ public class ConfigManager {
 
         LOGGER.info("Loaded {} preserved biomes, {} excluded replacements, {} cave biomes",
                 preserved.size(), excluded.size(), caves.size());
+    }
+
+    // Testing configuration methods
+    public static boolean isAutomatedTestingEnabled() {
+        return BiomePrunerConfig.INSTANCE.automatedTestingEnabled.get();
+    }
+
+    public static List<? extends String> getTestCoordinates() {
+        return BiomePrunerConfig.INSTANCE.testCoordinates.get();
+    }
+
+    public static int getPerformanceTestDuration() {
+        return BiomePrunerConfig.INSTANCE.performanceTestDuration.get();
+    }
+
+    public static int getPerformanceTestSpeed() {
+        return BiomePrunerConfig.INSTANCE.performanceTestSpeed.get();
+    }
+
+    public static String getTestResultsFile() {
+        return BiomePrunerConfig.INSTANCE.testResultsFile.get();
     }
 
 }

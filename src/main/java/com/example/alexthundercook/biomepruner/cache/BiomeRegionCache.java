@@ -14,6 +14,7 @@ import com.example.alexthundercook.biomepruner.util.Pos2D;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListSet;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Lock;
@@ -54,7 +55,8 @@ public class BiomeRegionCache {
         final RegionKey key;
         final ConcurrentHashMap<LocalPos, BiomeResult> biomeResults = new ConcurrentHashMap<>();
         final ConcurrentHashMap<SurfacePos, BiomeResult> surfaceResults = new ConcurrentHashMap<>();
-        final ConcurrentHashMap<Holder<Biome>, Boolean> knownLargeBiomes = new ConcurrentHashMap<>();
+        // Position-specific large biome cache - tracks 16x16 areas with center positions
+        final ConcurrentHashMap<Holder<Biome>, Set<Long>> largeBiomeCenters = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Integer, MicroBiomeColumn> microBiomeColumns = new ConcurrentHashMap<>();
         // Cache for biome-specific mismatch results (biome at position != surface biome)
         final ConcurrentHashMap<BiomePosKey, Boolean> biomeMismatchCache = new ConcurrentHashMap<>();
@@ -97,7 +99,7 @@ public class BiomeRegionCache {
     /**
      * Spatial flood fill result with coverage area
      */
-    private record SpatialFloodFillResult(boolean isLarge, Holder<Biome> replacement, int radius, long timestamp) {}
+    public record SpatialFloodFillResult(boolean isLarge, Holder<Biome> replacement, int radius, long timestamp) {}
 
     /**
      * Micro biome column replacement
@@ -266,12 +268,16 @@ public class BiomeRegionCache {
         if (task != null) {
             FloodFillResult result = new FloodFillResult(positions, isLarge, replacement);
 
-            // If this is a large biome, mark it in all affected regions
-            if (isLarge) {
-                RegionKey regionKey = getRegionKey(x, z);
-                Region region = getOrCreateRegion(regionKey);
-                region.knownLargeBiomes.put(biome, true);
-            } else {
+            // REMOVED: Known large biome marking was preventing micro biome detection
+            // This was marking entire biome types as large across regions
+            // 
+            // if (isLarge) {
+            //     RegionKey regionKey = getRegionKey(x, z);
+            //     Region region = getOrCreateRegion(regionKey);
+            //     region.knownLargeBiomes.put(biome, true);
+            // }
+            
+            if (!isLarge) {
                 // Cache column replacements for micro biome
                 for (Pos2D pos : positions) {
                     cacheMicroBiomeColumn(pos.x(), pos.z(), biome, replacement);
@@ -283,17 +289,58 @@ public class BiomeRegionCache {
     }
 
     /**
-     * Check if we already know a biome is large in this region
+     * Check if we already know a biome is large near this position
      */
-    public boolean isKnownLargeBiome(int x, int z, Holder<Biome> biome) {
+    public boolean isKnownLargeBiomeArea(int x, int z, Holder<Biome> biome) {
         RegionKey regionKey = getRegionKey(x, z);
         Region region = activeRegions.get(regionKey);
 
         if (region != null) {
-            return region.knownLargeBiomes.containsKey(biome);
+            Set<Long> largeBiomeCenters = region.largeBiomeCenters.get(biome);
+            if (largeBiomeCenters != null) {
+                // Check if this position is within 32 blocks of any known large center
+                for (Long center : largeBiomeCenters) {
+                    int centerX = (int)(center >> 32);
+                    int centerZ = (int)(center & 0xFFFFFFFF);
+                    
+                    int dx = Math.abs(x - centerX);
+                    int dz = Math.abs(z - centerZ);
+                    
+                    // Only block if within 32 blocks of the large biome center
+                    if (dx <= 32 && dz <= 32) {
+                        return true;
+                    }
+                }
+            }
         }
 
         return false;
+    }
+
+    /**
+     * Mark a biome center as large (32 block radius)
+     */
+    public void markLargeBiomeArea(int x, int z, Holder<Biome> biome) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = getOrCreateRegion(regionKey);
+        
+        long centerKey = ((long)x << 32) | (z & 0xFFFFFFFFL);
+        region.largeBiomeCenters.computeIfAbsent(biome, k -> new ConcurrentSkipListSet<>()).add(centerKey);
+        
+        // Debug logging for problematic area
+        if ((Math.abs(x - 10890) <= 100 && Math.abs(z - 17394) <= 100)) {
+            // Get biome name safely
+            String biomeName = "Unknown";
+            try {
+                if (biome.isBound() && biome.unwrapKey().isPresent()) {
+                    biomeName = biome.unwrapKey().get().location().getPath().replace('_', ' ');
+                }
+            } catch (Exception e) {
+                // Ignore errors in debug logging
+            }
+            LOGGER.info("BiomePruner: MARKED large biome center - {} at {},{} (32 block radius)", 
+                biomeName, x, z);
+        }
     }
 
     /**
@@ -466,6 +513,8 @@ public class BiomeRegionCache {
                     // Check if cache entry is still fresh (within 30 seconds)
                     long age = System.currentTimeMillis() - result.timestamp();
                     if (age < 30000) {
+                        // IMPORTANT: Track spatial cache hits in statistics
+                        hits.incrementAndGet();
                         return result;
                     }
                 }
@@ -493,6 +542,13 @@ public class BiomeRegionCache {
             isLarge, replacement, detectedRadius, System.currentTimeMillis());
         
         region.spatialFloodFillCache.put(key, result);
+    }
+
+    /**
+     * Record a cache hit (for tracking hit rates properly)
+     */
+    public void recordCacheHit() {
+        hits.incrementAndGet();
     }
 
     /**

@@ -57,11 +57,15 @@ public class DebugMessenger {
         // Get biome names
         String originalName = getBiomeName(originalBiome);
         String replacementName = getBiomeName(replacementBiome);
-        int regionSize = microBiomeRegion.size();
+        // Convert biome coordinate count to actual block count (each biome coordinate = 4x4 blocks)
+        int regionSize = microBiomeRegion.size() * 16;
 
-        // Calculate center of region for teleport
-        int centerX = microBiomeRegion.stream().mapToInt(Pos2D::x).sum() / regionSize;
-        int centerZ = microBiomeRegion.stream().mapToInt(Pos2D::z).sum() / regionSize;
+        // Calculate center of region for teleport (convert biome coordinates to block coordinates)
+        int biomeRegionSize = microBiomeRegion.size();
+        int centerBiomeX = microBiomeRegion.stream().mapToInt(Pos2D::x).sum() / biomeRegionSize;
+        int centerBiomeZ = microBiomeRegion.stream().mapToInt(Pos2D::z).sum() / biomeRegionSize;
+        int centerX = centerBiomeX << 2; // Convert to block coordinates
+        int centerZ = centerBiomeZ << 2; // Convert to block coordinates
 
         // Create the chat message
         Component message = createDebugMessage(

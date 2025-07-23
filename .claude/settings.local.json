@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "WebFetch(domain:aldak.netlify.app)",
+      "Bash(mkdir:*)",
+      "Bash(move build_script.py claude_tooling/scripts/)",
+      "Bash(move run_automated_tests.py claude_tooling/scripts/)",
+      "Bash(move minecraft_log_parser.py claude_tooling/scripts/)",
+      "Bash(mv:*)",
+      "Bash(cp:*)",
+      "Bash(true)"
+    ],
+    "deny": []
+  }
+}
