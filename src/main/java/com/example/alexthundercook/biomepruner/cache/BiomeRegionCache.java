@@ -53,8 +53,13 @@ public class BiomeRegionCache {
     private static class Region {
         final RegionKey key;
         final ConcurrentHashMap<LocalPos, BiomeResult> biomeResults = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<SurfacePos, BiomeResult> surfaceResults = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Holder<Biome>, Boolean> knownLargeBiomes = new ConcurrentHashMap<>();
         final ConcurrentHashMap<Integer, MicroBiomeColumn> microBiomeColumns = new ConcurrentHashMap<>();
+        // Cache for biome-specific mismatch results (biome at position != surface biome)
+        final ConcurrentHashMap<BiomePosKey, Boolean> biomeMismatchCache = new ConcurrentHashMap<>();
+        // Spatial cache for flood fill results - key is region center, value includes radius
+        final ConcurrentHashMap<SpatialFloodFillKey, SpatialFloodFillResult> spatialFloodFillCache = new ConcurrentHashMap<>();
         final AtomicLong lastAccessTime = new AtomicLong(System.nanoTime());
 
         Region(RegionKey key) {
@@ -73,6 +78,26 @@ public class BiomeRegionCache {
      * Cached biome result
      */
     public record BiomeResult(Holder<Biome> biome, boolean wasMicro) {}
+
+    /**
+     * Surface biome cache key (x, z coordinates only)
+     */
+    private record SurfacePos(int x, int z) {}
+
+    /**
+     * Biome-position key for mismatch caching (biome + position)
+     */
+    private record BiomePosKey(int x, int z, Holder<Biome> biome) {}
+    
+    /**
+     * Spatial flood fill cache key (grid-aligned position + biome)
+     */
+    private record SpatialFloodFillKey(int gridX, int gridZ, Holder<Biome> biome) {}
+    
+    /**
+     * Spatial flood fill result with coverage area
+     */
+    private record SpatialFloodFillResult(boolean isLarge, Holder<Biome> replacement, int radius, long timestamp) {}
 
     /**
      * Micro biome column replacement
@@ -130,7 +155,11 @@ public class BiomeRegionCache {
             RegionKey regionKey = getRegionKey(x, z);
             Region region = getOrCreateRegion(regionKey);
 
-            // First check if we have a specific result for this position
+            // Check surface-based cache first (most efficient for biome analysis)
+            // Note: Surface cache should only be used by the computer function that validates
+            // the vanilla biome matches the surface biome - not returned directly here
+
+            // Check legacy position-specific cache for backward compatibility
             LocalPos localPos = new LocalPos(x & 511, y, z & 511);
             BiomeResult existing = region.biomeResults.get(localPos);
             if (existing != null) {
@@ -158,8 +187,10 @@ public class BiomeRegionCache {
             // Double-check after acquiring lock
             RegionKey regionKey = getRegionKey(x, z);
             Region region = getOrCreateRegion(regionKey);
-            LocalPos localPos = new LocalPos(x & 511, y, z & 511);
+            
+            // Note: Surface cache handled by computer function, not directly here
 
+            LocalPos localPos = new LocalPos(x & 511, y, z & 511);
             BiomeResult existing = region.biomeResults.get(localPos);
             if (existing != null) {
                 hits.incrementAndGet();
@@ -180,10 +211,11 @@ public class BiomeRegionCache {
             if (tracker != null) tracker.recordCacheMiss();
             BiomeResult result = computer.apply(new Pos2D(x, z));
 
-            // Cache the result
+            // Cache the result in position cache
             PerformanceTracker.Timer storeTimer = tracker != null ?
                     tracker.startTimer(PerformanceTracker.Section.CACHE_STORE) : null;
             try {
+                // Store in position cache for backward compatibility
                 region.biomeResults.put(localPos, result);
             } finally {
                 if (storeTimer != null) storeTimer.close();
@@ -361,6 +393,106 @@ public class BiomeRegionCache {
         // Rough estimate: base overhead + entries
         return 1024 + (region.biomeResults.size() * 64L) +
                 (region.microBiomeColumns.size() * 32L);
+    }
+
+    /**
+     * Get surface cache result if available
+     */
+    public BiomeResult getSurfaceCacheResult(int x, int z) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = activeRegions.get(regionKey);
+        if (region != null) {
+            SurfacePos surfacePos = new SurfacePos(x & 511, z & 511);
+            return region.surfaceResults.get(surfacePos);
+        }
+        return null;
+    }
+
+    /**
+     * Store surface cache result
+     */
+    public void storeSurfaceCacheResult(int x, int z, BiomeResult result) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = getOrCreateRegion(regionKey);
+        SurfacePos surfacePos = new SurfacePos(x & 511, z & 511);
+        region.surfaceResults.put(surfacePos, result);
+    }
+
+    /**
+     * Check if we know this biome at position has mismatch (vanilla biome != surface biome)
+     */
+    public Boolean getBiomeMismatch(int x, int z, Holder<Biome> vanillaBiome) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = activeRegions.get(regionKey);
+        if (region != null) {
+            BiomePosKey key = new BiomePosKey(x & 511, z & 511, vanillaBiome);
+            return region.biomeMismatchCache.get(key);
+        }
+        return null;
+    }
+
+    /**
+     * Store biome mismatch result (vanilla biome != surface biome)
+     */
+    public void storeBiomeMismatch(int x, int z, Holder<Biome> vanillaBiome, boolean mismatch) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = getOrCreateRegion(regionKey);
+        BiomePosKey key = new BiomePosKey(x & 511, z & 511, vanillaBiome);
+        region.biomeMismatchCache.put(key, mismatch);
+    }
+    
+    /**
+     * Check if we have a nearby spatial flood fill result
+     */
+    public SpatialFloodFillResult getNearbyFloodFillResult(int x, int z, Holder<Biome> biome) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = activeRegions.get(regionKey);
+        if (region == null) return null;
+        
+        // Check multiple grid sizes for spatial cache hits
+        for (int gridSize : new int[]{32, 64, 128}) {
+            int gridX = (x / gridSize) * gridSize;
+            int gridZ = (z / gridSize) * gridSize;
+            SpatialFloodFillKey key = new SpatialFloodFillKey(gridX, gridZ, biome);
+            
+            SpatialFloodFillResult result = region.spatialFloodFillCache.get(key);
+            if (result != null) {
+                // Check if the position is within the cached result's coverage
+                int dx = Math.abs(x - gridX);
+                int dz = Math.abs(z - gridZ);
+                int distance = Math.max(dx, dz);
+                
+                if (distance <= result.radius()) {
+                    // Check if cache entry is still fresh (within 30 seconds)
+                    long age = System.currentTimeMillis() - result.timestamp();
+                    if (age < 30000) {
+                        return result;
+                    }
+                }
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Store spatial flood fill result for nearby position reuse
+     */
+    public void storeSpatialFloodFillResult(int x, int z, Holder<Biome> biome, boolean isLarge, 
+                                           Holder<Biome> replacement, int detectedRadius) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = getOrCreateRegion(regionKey);
+        
+        // Store in appropriate grid size based on detected radius
+        int gridSize = detectedRadius < 16 ? 32 : (detectedRadius < 32 ? 64 : 128);
+        int gridX = (x / gridSize) * gridSize;
+        int gridZ = (z / gridSize) * gridSize;
+        
+        SpatialFloodFillKey key = new SpatialFloodFillKey(gridX, gridZ, biome);
+        SpatialFloodFillResult result = new SpatialFloodFillResult(
+            isLarge, replacement, detectedRadius, System.currentTimeMillis());
+        
+        region.spatialFloodFillCache.put(key, result);
     }
 
     /**

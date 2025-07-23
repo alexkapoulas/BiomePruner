@@ -76,6 +76,11 @@ public class BiomePrunerCommands {
         // Reset performance data
         biomepruner.then(Commands.literal("reset")
                 .executes(context -> executeReset(context.getSource())));
+                
+        // Clear cache command for testing
+        biomepruner.then(Commands.literal("clearcache")
+                .requires(source -> source.hasPermission(2))
+                .executes(context -> executeClearCache(context.getSource())));
 
         dispatcher.register(biomepruner);
     }
@@ -372,13 +377,28 @@ public class BiomePrunerCommands {
             PerformanceTracker.Section section = entry.getKey();
             PerformanceTracker.SectionStats sectionStats = entry.getValue();
 
-            source.sendSuccess(() -> Component.literal("\n" + section.getDisplayName() + ":")
+            // Display section header with sample count
+            String headerText = String.format("\n%s (%d samples):", 
+                section.getDisplayName(), sectionStats.sampleCount());
+            source.sendSuccess(() -> Component.literal(headerText)
                     .withStyle(ChatFormatting.AQUA), false);
 
+            // Show warning for insufficient samples
+            if (sectionStats.sampleCount() < 3) {
+                source.sendSuccess(() -> Component.literal("  [Warning: Low sample count - statistics may be unreliable]")
+                        .withStyle(ChatFormatting.YELLOW), false);
+            }
+
             source.sendSuccess(() -> createPerfLine("  Average", sectionStats.avgMicros(), "μs"), false);
-            source.sendSuccess(() -> createPerfLine("  Median (P50)", sectionStats.p50Micros(), "μs"), false);
-            source.sendSuccess(() -> createPerfLine("  P90", sectionStats.p90Micros(), "μs"), false);
-            source.sendSuccess(() -> createPerfLine("  P99", sectionStats.p99Micros(), "μs"), false);
+            
+            // Only show percentiles if we have meaningful data
+            if (sectionStats.sampleCount() >= 3) {
+                source.sendSuccess(() -> createPerfLine("  Median (P50)", sectionStats.p50Micros(), "μs"), false);
+                source.sendSuccess(() -> createPerfLine("  P90", sectionStats.p90Micros(), "μs"), false);
+                source.sendSuccess(() -> createPerfLine("  P99", sectionStats.p99Micros(), "μs"), false);
+            }
+            
+            source.sendSuccess(() -> createPerfLine("  Min", sectionStats.minMicros(), "μs"), false);
             source.sendSuccess(() -> createPerfLine("  Max", sectionStats.maxMicros(), "μs"), false);
         }
 
@@ -447,6 +467,18 @@ public class BiomePrunerCommands {
 
         source.sendSuccess(() -> Component.literal("Performance data has been reset")
                 .withStyle(ChatFormatting.GREEN), false);
+
+        return 1;
+    }
+
+    /**
+     * Execute clear cache command - for testing cache behavior
+     */
+    private static int executeClearCache(CommandSourceStack source) {
+        // Clear region cache by creating a new instance
+        // Note: This is a simple approach - in production we might want a proper clear method
+        source.sendSuccess(() -> Component.literal("Cache clearing is not implemented yet - use server restart to clear cache")
+                .withStyle(ChatFormatting.YELLOW), false);
 
         return 1;
     }

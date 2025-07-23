@@ -59,11 +59,27 @@ public class PerformanceTracker {
         return INSTANCE;
     }
 
+    // Dynamic sampling - higher rate for rare operations like flood fills
+    private static final int DEFAULT_SAMPLING_RATE = 100; // Track 1% of executions
+    private static final int FLOOD_FILL_SAMPLING_RATE = 5; // Track 20% of flood fills (rare operation)
+    private final AtomicLong sampleCounter = new AtomicLong(0);
+    private final AtomicLong floodFillSampleCounter = new AtomicLong(0);
+
     /**
-     * Start timing a section
+     * Start timing a section (with sampling to reduce overhead)
      */
     public Timer startTimer(Section section) {
-        return new Timer(section);
+        // Use higher sampling rate for flood fills since they're rare
+        boolean shouldTrack;
+        if (section == Section.FLOOD_FILL) {
+            long count = floodFillSampleCounter.incrementAndGet();
+            shouldTrack = (count % FLOOD_FILL_SAMPLING_RATE == 0);
+        } else {
+            long count = sampleCounter.incrementAndGet();
+            shouldTrack = (count % DEFAULT_SAMPLING_RATE == 0);
+        }
+        
+        return new Timer(section, shouldTrack);
     }
 
     /**
@@ -86,16 +102,25 @@ public class PerformanceTracker {
     public class Timer implements AutoCloseable {
         private final Section section;
         private final long startNanos;
+        private final boolean shouldTrack;
 
-        Timer(Section section) {
+        Timer(Section section, boolean shouldTrack) {
             this.section = section;
-            this.startNanos = System.nanoTime();
+            this.shouldTrack = shouldTrack;
+            this.startNanos = shouldTrack ? System.nanoTime() : 0;
         }
 
         @Override
         public void close() {
-            long durationNanos = System.nanoTime() - startNanos;
-            recordMetric(section, durationNanos);
+            // Always count total executions, but only record detailed metrics for sampled ones
+            if (section == Section.TOTAL) {
+                totalExecutions.incrementAndGet();
+            }
+            
+            if (shouldTrack) {
+                long durationNanos = System.nanoTime() - startNanos;
+                recordMetric(section, durationNanos);
+            }
         }
 
         public long getElapsedNanos() {
@@ -189,7 +214,7 @@ public class PerformanceTracker {
      */
     private SectionStats calculateStats(List<Long> sortedDurations) {
         if (sortedDurations.isEmpty()) {
-            return new SectionStats(0, 0, 0, 0, 0);
+            return new SectionStats(0L, 0L, 0L, 0L, 0L, 0L, 0);
         }
 
         // Calculate average
@@ -198,12 +223,13 @@ public class PerformanceTracker {
 
         // Calculate percentiles
         int size = sortedDurations.size();
-        long p50 = sortedDurations.get(size / 2);
-        long p90 = sortedDurations.get((int)(size * 0.9));
-        long p99 = sortedDurations.get((int)(size * 0.99));
+        long p50 = sortedDurations.get(Math.max(0, size / 2 - 1));
+        long p90 = sortedDurations.get(Math.max(0, (int)(size * 0.9) - 1));
+        long p99 = sortedDurations.get(Math.max(0, (int)(size * 0.99) - 1));
         long max = sortedDurations.get(size - 1);
+        long min = sortedDurations.get(0);
 
-        return new SectionStats(avg, p50, p90, p99, max);
+        return new SectionStats(avg, p50, p90, p99, max, min, size);
     }
 
     /**
@@ -286,12 +312,15 @@ public class PerformanceTracker {
             long p50Nanos,
             long p90Nanos,
             long p99Nanos,
-            long maxNanos
+            long maxNanos,
+            long minNanos,
+            int sampleCount
     ) {
         public double avgMicros() { return avgNanos / 1000.0; }
         public double p50Micros() { return p50Nanos / 1000.0; }
         public double p90Micros() { return p90Nanos / 1000.0; }
         public double p99Micros() { return p99Nanos / 1000.0; }
         public double maxMicros() { return maxNanos / 1000.0; }
+        public double minMicros() { return minNanos / 1000.0; }
     }
 }
