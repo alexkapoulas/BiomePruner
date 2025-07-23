@@ -58,7 +58,7 @@ public class BiomePrunerConfig {
 
         microBiomeThreshold = builder
                 .comment("Biome size threshold. Biomes smaller than this are considered 'micro' and will be replaced.")
-                .defineInRange("microBiomeThreshold", 50, 10, 1000);
+                .defineInRange("microBiomeThreshold", 256, 10, 1000);
 
         builder.pop();
 
@@ -68,10 +68,7 @@ public class BiomePrunerConfig {
                 .comment("Biomes that should never be removed (always preserved)")
                 .defineList("preservedBiomes",
                         Arrays.asList(
-                                "minecraft:mushroom_fields",
-                                "minecraft:ice_spikes",
-                                "minecraft:flower_forest",
-                                "minecraft:bamboo_jungle"
+                                "minecraft:mushroom_fields"
                         ),
                         obj -> obj instanceof String);
 
@@ -88,11 +85,11 @@ public class BiomePrunerConfig {
 
         preserveOceanMonuments = builder
                 .comment("Treat ocean monuments specially - preserve small ocean patches containing them")
-                .define("preserveOceanMonuments", true);
+                .define("preserveOceanMonuments", false);
 
         preserveVillageBiomes = builder
                 .comment("Treat village biomes specially - preserve small plains/desert/savanna/taiga/snowy patches")
-                .define("preserveVillageBiomes", true);
+                .define("preserveVillageBiomes", false);
 
         caveBiomes = builder
                 .comment("Biomes considered to be caves/underground. When detected at surface level, " +
@@ -128,11 +125,11 @@ public class BiomePrunerConfig {
 
         maxCacheMemoryMB = builder
                 .comment("Maximum memory usage for caches in MB")
-                .defineInRange("maxCacheMemoryMB", 512, 64, 4096);
+                .defineInRange("maxCacheMemoryMB", 2048, 64, 4096);
 
         maxActiveRegions = builder
                 .comment("Number of regions to keep active in memory")
-                .defineInRange("maxActiveRegions", 100, 10, 1000);
+                .defineInRange("maxActiveRegions", 500, 10, 1000);
 
         enableWorkStealing = builder
                 .comment("Enable work-stealing for collaborative flood fills")
@@ -140,7 +137,7 @@ public class BiomePrunerConfig {
 
         cacheInterpolatedHeights = builder
                 .comment("Cache interpolated heightmap values (trades memory for speed)")
-                .define("cacheInterpolatedHeights", false);
+                .define("cacheInterpolatedHeights", true);
 
         builder.pop();
 

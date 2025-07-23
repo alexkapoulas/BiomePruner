@@ -683,6 +683,17 @@ public class BiomeRegionCache {
     public void clearAll() {
         LOGGER.info("BiomePruner: Clearing all cache data for world unload");
         
+        // Cancel all running flood fill tasks before clearing
+        for (FloodFillTask task : floodFillTasks.values()) {
+            try {
+                if (!task.getFuture().isDone()) {
+                    task.getFuture().cancel(true);
+                }
+            } catch (Exception e) {
+                // Ignore errors during cancellation
+            }
+        }
+        
         // Clear all cached regions and their data
         activeRegions.clear();
         
