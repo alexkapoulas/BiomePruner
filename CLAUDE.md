@@ -36,6 +36,15 @@ python claude_tooling/scripts/config_manager.py write general microBiomeThreshol
 - Automatic type detection and validation
 - Creates backups before major changes
 
+### 4. Log Analysis
+**When you need to analyze Minecraft logs for debugging:**
+```bash
+python claude_tooling/scripts/log_parser.py
+```
+- Extracts warnings, errors, and fatal errors from Minecraft logs
+- Identifies BiomePruner-specific messages for debugging
+- Outputs organized markdown reports and JSON data to `claude_tooling/log_output/`
+
 ## Project Directory Structure
 
 ```
@@ -46,6 +55,7 @@ BiomePruner/
 │   ├── scripts/                # Python automation scripts
 │   ├── build_output/           # Build validation reports
 │   ├── test_output/            # Test results and logs
+│   ├── log_output/             # Parsed log analysis reports
 │   └── config_backups/         # Configuration backups
 ├── src/                        # Source code
 │   ├── CLAUDE.md               # Source code documentation (auto-loaded in src context)

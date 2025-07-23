@@ -5,6 +5,7 @@
 - **`claude_tooling/scripts/build_script.py`** - Gradle build automation with error reporting
 - **`claude_tooling/scripts/run_automated_tests.py`** - Automated testing orchestration with integrated log parsing
 - **`claude_tooling/scripts/config_manager.py`** - Safe mod configuration management (excludes testing section)
+- **`claude_tooling/scripts/log_parser.py`** - Standalone log parser for warnings, errors, and BiomePruner messages
 
 ## Usage
 
@@ -29,6 +30,11 @@ python claude_tooling/scripts/run_automated_tests.py --tests all
 python claude_tooling/scripts/config_manager.py read general microBiomeThreshold
 python claude_tooling/scripts/config_manager.py write general microBiomeThreshold 75
 python claude_tooling/scripts/config_manager.py sections
+
+# Log parsing (standalone analysis of Minecraft logs)
+python claude_tooling/scripts/log_parser.py                    # Parse both latest and debug logs
+python claude_tooling/scripts/log_parser.py --log-type latest  # Parse only latest.log
+python claude_tooling/scripts/log_parser.py --log-type debug   # Parse only debug.log
 ```
 
 ## Build Script
@@ -73,3 +79,15 @@ python claude_tooling/scripts/config_manager.py sections
 - **Sections**: `general`, `biome_blacklist`, `performance`, `heightmap` (testing section is protected)
 - **Commands**: `read`, `write`, `list`, `sections`, `backup`, `restore`
 - **Auto-backup**: Creates backup before restoration operations
+
+## Log Parser
+
+- **Exit codes**: 0 = success, 1 = no logs parsed, 2 = partial success
+- **Process**: Scans Minecraft log files for warnings, errors, fatal errors, and BiomePruner-specific messages
+- **Features**: Creates separate markdown reports for errors/warnings and BiomePruner messages, plus JSON data export
+
+### Output Files
+- **`claude_tooling/log_output/latest_errors_warnings.md`** - Formatted report of all warnings, errors, and fatal errors from latest.log
+- **`claude_tooling/log_output/latest_biomepruner_messages.md`** - All BiomePruner-related messages from latest.log
+- **`claude_tooling/log_output/latest_parsed_data.json`** - Structured JSON data for programmatic analysis
+- **`claude_tooling/log_output/debug_*`** - Same file types for debug.log when parsed

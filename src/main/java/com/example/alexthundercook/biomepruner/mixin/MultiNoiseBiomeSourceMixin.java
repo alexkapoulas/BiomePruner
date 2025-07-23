@@ -49,6 +49,12 @@ public class MultiNoiseBiomeSourceMixin {
             // Get the vanilla biome that was already calculated
             Holder<Biome> vanillaBiome = cir.getReturnValue();
 
+            // Additional safety check: Ensure we have a valid biome holder
+            if (vanillaBiome == null) {
+                BiomePruner.LOGGER.warn("BiomePruner: Received null biome at {},{},{}, skipping modification", x, y, z);
+                return;
+            }
+
             // Get the biome smoother instance
             BiomeSmoother smoother = BiomeSmoother.getInstance();
 
@@ -66,6 +72,12 @@ public class MultiNoiseBiomeSourceMixin {
             // Either the vanilla biome or the replacement, never null
             Holder<Biome> modifiedBiome = smoother.getModifiedBiome(blockX, blockY, blockZ,
                     vanillaBiome, (MultiNoiseBiomeSource)(Object)this, sampler);
+
+            // Additional safety check: Ensure replacement is valid
+            if (modifiedBiome == null) {
+                BiomePruner.LOGGER.warn("BiomePruner: Got null replacement biome at {},{},{}, using vanilla", x, y, z);
+                return;
+            }
 
             // Log first successful replacement (rate limited to prevent spam)
             if (!hasLoggedReplacement && !modifiedBiome.equals(vanillaBiome) && ConfigManager.isPerformanceLoggingEnabled()) {
