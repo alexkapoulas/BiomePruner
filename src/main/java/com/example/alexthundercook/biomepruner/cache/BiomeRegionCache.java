@@ -1,0 +1,379 @@
+package com.example.alexthundercook.biomepruner.cache;
+
+import com.google.common.util.concurrent.Striped;
+import net.minecraft.core.Holder;
+import net.minecraft.world.level.biome.Biome;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import com.example.alexthundercook.biomepruner.config.ConfigManager;
+import com.example.alexthundercook.biomepruner.performance.PerformanceTracker;
+import com.example.alexthundercook.biomepruner.util.LocalPos;
+import com.example.alexthundercook.biomepruner.util.RegionKey;
+import com.example.alexthundercook.biomepruner.util.Pos2D;
+
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentLinkedDeque;
+
+public class BiomeRegionCache {
+    private static final Logger LOGGER = LoggerFactory.getLogger("BiomePruner");
+    private static final BiomeRegionCache INSTANCE = new BiomeRegionCache();
+    private static final int REGION_SIZE = 512;
+    private static final int REGION_SHIFT = 9; // log2(512)
+
+    private final ConcurrentHashMap<RegionKey, Region> activeRegions = new ConcurrentHashMap<>();
+    private final Striped<Lock> regionLocks = Striped.lock(256);
+
+    // Position-level locking for deterministic processing
+    private final Striped<Lock> positionLocks = Striped.lock(4096);
+
+    // Global flood fill cache to prevent duplicate work
+    private final ConcurrentHashMap<FloodFillKey, FloodFillTask> floodFillTasks = new ConcurrentHashMap<>();
+
+    private final AtomicLong memoryUsage = new AtomicLong(0);
+
+    // Statistics
+    private final AtomicLong hits = new AtomicLong(0);
+    private final AtomicLong misses = new AtomicLong(0);
+
+    private BiomeRegionCache() {}
+
+    public static BiomeRegionCache getInstance() {
+        return INSTANCE;
+    }
+
+    /**
+     * Region represents a 512x512 area
+     */
+    private static class Region {
+        final RegionKey key;
+        final ConcurrentHashMap<LocalPos, BiomeResult> biomeResults = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Holder<Biome>, Boolean> knownLargeBiomes = new ConcurrentHashMap<>();
+        final ConcurrentHashMap<Integer, MicroBiomeColumn> microBiomeColumns = new ConcurrentHashMap<>();
+        final AtomicLong lastAccessTime = new AtomicLong(System.nanoTime());
+
+        Region(RegionKey key) {
+            this.key = key;
+        }
+
+        /**
+         * Get column key from x,z coordinates
+         */
+        private static int getColumnKey(int localX, int localZ) {
+            return (localX & 511) << 9 | (localZ & 511);
+        }
+    }
+
+    /**
+     * Cached biome result
+     */
+    public record BiomeResult(Holder<Biome> biome, boolean wasMicro) {}
+
+    /**
+     * Micro biome column replacement
+     */
+    private record MicroBiomeColumn(Holder<Biome> originalSurfaceBiome, Holder<Biome> replacement) {}
+
+    /**
+     * Surface biome cache entry
+     */
+    private record SurfaceBiomeEntry(int surfaceY, Holder<Biome> surfaceBiome) {}
+
+    /**
+     * Key for flood fill deduplication
+     */
+    private record FloodFillKey(int x, int z, Holder<Biome> biome) {}
+
+    /**
+     * Flood fill task for collaborative processing
+     */
+    public static class FloodFillTask {
+        private final CompletableFuture<FloodFillResult> future = new CompletableFuture<>();
+        private volatile FloodFillResult result;
+
+        public CompletableFuture<FloodFillResult> getFuture() {
+            return future;
+        }
+
+        public void complete(FloodFillResult result) {
+            this.result = result;
+            future.complete(result);
+        }
+
+        public FloodFillResult getResult() {
+            return result;
+        }
+    }
+
+    /**
+     * Result of flood fill
+     */
+    public record FloodFillResult(Set<Pos2D> positions, boolean isLarge, Holder<Biome> replacement) {}
+
+    /**
+     * Get or compute biome for position - MUST be deterministic
+     */
+    public BiomeResult getOrComputeBiome(int x, int y, int z,
+                                         Holder<Biome> vanillaBiome,
+                                         java.util.function.Function<Pos2D, BiomeResult> computer) {
+        PerformanceTracker tracker = ConfigManager.isPerformanceLoggingEnabled() ?
+                PerformanceTracker.getInstance() : null;
+        PerformanceTracker.Timer cacheTimer = tracker != null ?
+                tracker.startTimer(PerformanceTracker.Section.CACHE_CHECK) : null;
+
+        try {
+            RegionKey regionKey = getRegionKey(x, z);
+            Region region = getOrCreateRegion(regionKey);
+
+            // First check if we have a specific result for this position
+            LocalPos localPos = new LocalPos(x & 511, y, z & 511);
+            BiomeResult existing = region.biomeResults.get(localPos);
+            if (existing != null) {
+                hits.incrementAndGet();
+                if (tracker != null) tracker.recordCacheHit();
+                return existing;
+            }
+
+            // Check column cache
+            int columnKey = Region.getColumnKey(x & 511, z & 511);
+            MicroBiomeColumn column = region.microBiomeColumns.get(columnKey);
+            if (column != null && column.originalSurfaceBiome.equals(vanillaBiome)) {
+                hits.incrementAndGet();
+                if (tracker != null) tracker.recordCacheHit();
+                return new BiomeResult(column.replacement, true);
+            }
+        } finally {
+            if (cacheTimer != null) cacheTimer.close();
+        }
+
+        // Need to compute - use position lock for determinism
+        Lock posLock = positionLocks.get(new Pos2D(x, z));
+        posLock.lock();
+        try {
+            // Double-check after acquiring lock
+            RegionKey regionKey = getRegionKey(x, z);
+            Region region = getOrCreateRegion(regionKey);
+            LocalPos localPos = new LocalPos(x & 511, y, z & 511);
+
+            BiomeResult existing = region.biomeResults.get(localPos);
+            if (existing != null) {
+                hits.incrementAndGet();
+                if (tracker != null) tracker.recordCacheHit();
+                return existing;
+            }
+
+            int columnKey = Region.getColumnKey(x & 511, z & 511);
+            MicroBiomeColumn column = region.microBiomeColumns.get(columnKey);
+            if (column != null && column.originalSurfaceBiome.equals(vanillaBiome)) {
+                hits.incrementAndGet();
+                if (tracker != null) tracker.recordCacheHit();
+                return new BiomeResult(column.replacement, true);
+            }
+
+            // Compute the result
+            misses.incrementAndGet();
+            if (tracker != null) tracker.recordCacheMiss();
+            BiomeResult result = computer.apply(new Pos2D(x, z));
+
+            // Cache the result
+            PerformanceTracker.Timer storeTimer = tracker != null ?
+                    tracker.startTimer(PerformanceTracker.Section.CACHE_STORE) : null;
+            try {
+                region.biomeResults.put(localPos, result);
+            } finally {
+                if (storeTimer != null) storeTimer.close();
+            }
+
+            return result;
+        } finally {
+            posLock.unlock();
+        }
+    }
+
+    /**
+     * Get or start flood fill task
+     */
+    public FloodFillTask getOrStartFloodFill(int x, int z, Holder<Biome> biome) {
+        FloodFillKey key = new FloodFillKey(x, z, biome);
+
+        // Try to get existing task
+        FloodFillTask existing = floodFillTasks.get(key);
+        if (existing != null) {
+            return existing;
+        }
+
+        // Create new task
+        FloodFillTask newTask = new FloodFillTask();
+        FloodFillTask actual = floodFillTasks.putIfAbsent(key, newTask);
+
+        return actual != null ? actual : newTask;
+    }
+
+    /**
+     * Get existing flood fill task without creating a new one
+     */
+    public FloodFillTask getExistingFloodFill(int x, int z, Holder<Biome> biome) {
+        FloodFillKey key = new FloodFillKey(x, z, biome);
+        return floodFillTasks.get(key);
+    }
+
+    /**
+     * Complete flood fill task and cache results
+     */
+    public void completeFloodFill(int x, int z, Holder<Biome> biome,
+                                  Set<Pos2D> positions, boolean isLarge,
+                                  Holder<Biome> replacement) {
+        FloodFillKey key = new FloodFillKey(x, z, biome);
+        FloodFillTask task = floodFillTasks.get(key);
+
+        if (task != null) {
+            FloodFillResult result = new FloodFillResult(positions, isLarge, replacement);
+
+            // If this is a large biome, mark it in all affected regions
+            if (isLarge) {
+                RegionKey regionKey = getRegionKey(x, z);
+                Region region = getOrCreateRegion(regionKey);
+                region.knownLargeBiomes.put(biome, true);
+            } else {
+                // Cache column replacements for micro biome
+                for (Pos2D pos : positions) {
+                    cacheMicroBiomeColumn(pos.x(), pos.z(), biome, replacement);
+                }
+            }
+
+            task.complete(result);
+        }
+    }
+
+    /**
+     * Check if we already know a biome is large in this region
+     */
+    public boolean isKnownLargeBiome(int x, int z, Holder<Biome> biome) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = activeRegions.get(regionKey);
+
+        if (region != null) {
+            return region.knownLargeBiomes.containsKey(biome);
+        }
+
+        return false;
+    }
+
+    /**
+     * Cache a biome result for a specific position
+     */
+    public void cacheBiome(int x, int y, int z, Holder<Biome> biome, boolean wasMicro) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = getOrCreateRegion(regionKey);
+
+        LocalPos localPos = new LocalPos(x & 511, y, z & 511);
+        region.biomeResults.put(localPos, new BiomeResult(biome, wasMicro));
+    }
+
+    /**
+     * Cache a micro biome column replacement
+     */
+    private void cacheMicroBiomeColumn(int x, int z, Holder<Biome> originalSurfaceBiome,
+                                       Holder<Biome> replacement) {
+        RegionKey regionKey = getRegionKey(x, z);
+        Region region = getOrCreateRegion(regionKey);
+
+        int columnKey = Region.getColumnKey(x & 511, z & 511);
+        region.microBiomeColumns.put(columnKey, new MicroBiomeColumn(originalSurfaceBiome, replacement));
+    }
+
+    /**
+     * Get or create region with thread safety
+     */
+    private Region getOrCreateRegion(RegionKey key) {
+        Region existing = activeRegions.get(key);
+        if (existing != null) {
+            existing.lastAccessTime.set(System.nanoTime());
+            return existing;
+        }
+
+        Lock lock = regionLocks.get(key);
+        lock.lock();
+        try {
+            // Double-check after acquiring lock
+            existing = activeRegions.get(key);
+            if (existing != null) {
+                return existing;
+            }
+
+            // Check memory before creating
+            ensureMemoryAvailable();
+
+            Region newRegion = new Region(key);
+            activeRegions.put(key, newRegion);
+            memoryUsage.addAndGet(estimateRegionMemory(newRegion));
+
+            return newRegion;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * Ensure memory is available by evicting old regions
+     */
+    private void ensureMemoryAvailable() {
+        long maxMemory = ConfigManager.getMaxCacheMemoryMB() * 1024L * 1024L;
+
+        while (memoryUsage.get() > maxMemory && activeRegions.size() > 1) {
+            // Find and evict oldest region
+            Region oldest = null;
+            long oldestTime = Long.MAX_VALUE;
+
+            for (Region region : activeRegions.values()) {
+                long lastAccess = region.lastAccessTime.get();
+                if (lastAccess < oldestTime) {
+                    oldestTime = lastAccess;
+                    oldest = region;
+                }
+            }
+
+            if (oldest != null) {
+                activeRegions.remove(oldest.key);
+                memoryUsage.addAndGet(-estimateRegionMemory(oldest));
+            } else {
+                break;
+            }
+        }
+    }
+
+    /**
+     * Convert block coordinates to region key
+     */
+    private static RegionKey getRegionKey(int x, int z) {
+        return new RegionKey(x >> REGION_SHIFT, z >> REGION_SHIFT);
+    }
+
+    /**
+     * Estimate memory usage of a region
+     */
+    private static long estimateRegionMemory(Region region) {
+        // Rough estimate: base overhead + entries
+        return 1024 + (region.biomeResults.size() * 64L) +
+                (region.microBiomeColumns.size() * 32L);
+    }
+
+    /**
+     * Get cache statistics
+     */
+    public String getStatistics() {
+        long h = hits.get();
+        long m = misses.get();
+        double hitRate = (h + m == 0) ? 0.0 : (double) h / (h + m);
+
+        return String.format("Regions: %d, Memory: %.2f MB, Hit rate: %.2f%%",
+                activeRegions.size(),
+                memoryUsage.get() / 1024.0 / 1024.0,
+                hitRate * 100);
+    }
+}
