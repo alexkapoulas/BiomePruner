@@ -4,6 +4,11 @@
 
 BiomePruner eliminates micro biomes (small isolated biome patches) by replacing them with their dominant neighboring biome. It hooks into world generation using Mixins to intercept biome queries.
 
+## Design Priorities
+
+1. **Biome Replacement Accuracy** - Top priority. The mod must correctly identify and replace micro biomes
+2. **Performance** - Secondary priority. Optimizations should never compromise accuracy
+
 ## Main Entry Point
 
 - **`BiomePruner.java`**: Main mod class that handles NeoForge initialization, configuration registration, command registration, and event bus setup
@@ -15,6 +20,8 @@ BiomePruner eliminates micro biomes (small isolated biome patches) by replacing 
 - **`NoiseBasedChunkGeneratorMixin`**: Provides access to height calculation
 
 **Key Pattern**: Mixins are kept minimal and delegate to regular classes. Use `@Unique` prefix for added methods.
+
+**Critical Design Rule**: The `getNoiseBiome` mixin must ALWAYS return the correct biome and NEVER yield to vanilla. If we yield to vanilla thinking it can be fixed by a later flood fill, the biome data might become baked before that happens. This is a fundamental design choice that should never be changed.
 
 ### `core/` - Main Algorithm
 - **`BiomeSmoother`**: Singleton class with main algorithm that determines if a biome is micro and finds replacements

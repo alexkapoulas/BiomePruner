@@ -24,6 +24,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 
+
 try:
     import psutil
     import toml
@@ -174,7 +175,9 @@ class AutomatedTestRunner:
             print(f"[ERROR] Config file not found: {CONFIG_FILE}")
             return False
             
-        gradlew = PROJECT_ROOT / "gradlew.bat"
+        # Always check for Unix gradle wrapper in Claude Code environment
+        gradlew = PROJECT_ROOT / "gradlew"
+            
         if not gradlew.exists():
             print(f"[ERROR] Gradle wrapper not found: {gradlew}")
             return False
@@ -193,22 +196,25 @@ class AutomatedTestRunner:
             return False
             
     def enable_automated_testing(self) -> bool:
-        """Enable automated testing in the configuration."""
+        """Enable both mod and automated testing in the configuration."""
         try:
             with open(CONFIG_FILE, 'r') as f:
                 config = toml.load(f)
                 
-            # Ensure testing section exists
+            # Ensure sections exist
+            if 'general' not in config:
+                config['general'] = {}
             if 'testing' not in config:
                 config['testing'] = {}
                 
-            # Enable automated testing
+            # Enable both the mod itself and automated testing
+            config['general']['enabled'] = True
             config['testing']['automatedTestingEnabled'] = True
             
             with open(CONFIG_FILE, 'w') as f:
                 toml.dump(config, f)
                 
-            print("[INFO] Automated testing enabled in configuration")
+            print("[INFO] Mod and automated testing enabled in configuration")
             return True
         except Exception as e:
             print(f"[ERROR] Failed to enable automated testing: {e}")
@@ -264,20 +270,52 @@ class AutomatedTestRunner:
     def launch_gradle_build(self) -> bool:
         """Launch the Gradle buildAndRun task."""
         try:
-            gradlew = PROJECT_ROOT / "gradlew.bat"
-            cmd = [str(gradlew), "buildAndRun", "--no-daemon", "--console=plain"]
+            # Use the exact same approach as the build script for compatibility
+            gradle_wrapper = PROJECT_ROOT / "gradlew.bat"
+            gradle_args = ["buildAndRun", "--no-daemon", "--console=plain"]
             
-            print(f"[INFO] Launching Gradle: {' '.join(cmd)}")
-            
-            self.gradle_process = subprocess.Popen(
-                cmd,
-                cwd=PROJECT_ROOT,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
+            # Method 1: Direct execution with .bat file (from build script)
+            try:
+                cmd = [str(gradle_wrapper)] + gradle_args
+
+                # Use subprocess.run first to test, then convert to Popen if successful
+                test_result = subprocess.run(
+                    cmd,
+                    cwd=str(PROJECT_ROOT),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,  # Quick test
+                    shell=False,
+                    env={**os.environ, "TERM": "dumb"}
+                )
+
+                if test_result.returncode != 0 and "/c:" in test_result.stderr:
+                    raise Exception("Shell interpretation error detected")
+
+                self.gradle_process = subprocess.Popen(
+                    cmd,
+                    cwd=str(PROJECT_ROOT),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    shell=False,
+                    env={**os.environ, "TERM": "dumb"}
+                )
+
+            except Exception as e:
+                # Method 2: Use cmd.exe explicitly (from build script)
+                gradle_cmd = f'{gradle_wrapper} {" ".join(gradle_args)}'
+                cmd = ["cmd.exe", "/c", gradle_cmd]
+                
+                self.gradle_process = subprocess.Popen(
+                    cmd,
+                    cwd=str(PROJECT_ROOT),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    shell=False,
+                    env={**os.environ, "TERM": "dumb"}
+                )
             
             # Start a thread to monitor Gradle output
             threading.Thread(
@@ -296,13 +334,61 @@ class AutomatedTestRunner:
             return
             
         try:
-            for line in iter(self.gradle_process.stdout.readline, ''):
-                line = line.strip()
-                if line:
-                    # Show important Gradle messages
-                    if any(keyword in line.lower() for keyword in 
-                          ['error', 'failed', 'exception', 'build successful', 'launching']):
-                        print(f"[GRADLE] {line}")
+            import queue
+            import threading
+            import time
+            
+            # Use a queue-based approach to avoid blocking I/O
+            output_queue = queue.Queue()
+            
+            def enqueue_output():
+                """Thread function to read output and put it in queue."""
+                try:
+                    while True:
+                        line = self.gradle_process.stdout.readline()
+                        if not line:
+                            break
+                        output_queue.put(line.strip())
+                except Exception:
+                    pass
+                finally:
+                    output_queue.put(None)  # Signal end
+            
+            # Start the output reading thread
+            reader_thread = threading.Thread(target=enqueue_output, daemon=True)
+            reader_thread.start()
+            
+            # Main monitoring loop with timeouts
+            while self.gradle_process.poll() is None:
+                try:
+                    # Try to get output with timeout
+                    line = output_queue.get(timeout=1.0)
+                    
+                    if line is None:  # End signal
+                        break
+                        
+                    if line:
+                        # Show important Gradle messages
+                        if any(keyword in line.lower() for keyword in 
+                              ['error', 'failed', 'exception', 'build successful', 'launching']):
+                            print(f"[GRADLE] {line}")
+                            
+                except queue.Empty:
+                    # No output received within timeout, continue monitoring
+                    continue
+                except Exception:
+                    break
+            
+            # Process any remaining output
+            try:
+                while True:
+                    line = output_queue.get_nowait()
+                    if line and line is not None:
+                        if any(keyword in line.lower() for keyword in 
+                              ['error', 'failed', 'exception', 'build successful', 'launching']):
+                            print(f"[GRADLE] {line}")
+            except queue.Empty:
+                pass
                         
         except Exception as e:
             print(f"[WARN] Error monitoring Gradle output: {e}")
@@ -528,10 +614,8 @@ class AutomatedTestRunner:
         
     def run(self) -> int:
         """Main test execution method."""
-        self.start_time = time.time()
-        
         print("=== BiomePruner Automated Testing ===")
-        print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        self.start_time = time.time()
         
         try:
             # Pre-flight checks
@@ -581,7 +665,7 @@ class AutomatedTestRunner:
             if analysis['success']:
                 print(f"Biome tests: {analysis['passed_biome_tests']}/{analysis['total_biome_tests']} passed")
                 print(f"Success rate: {analysis['success_rate']:.1%}")
-                print(f"Performance test: {'✓' if analysis['performance_test_completed'] else '✗'}")
+                print(f"Performance test: {'PASS' if analysis['performance_test_completed'] else 'FAIL'}")
                 
                 if analysis['success_rate'] == 1.0 and analysis['performance_test_completed']:
                     print("[SUCCESS] All tests passed!")
@@ -594,7 +678,7 @@ class AutomatedTestRunner:
                 return 1
                 
         except KeyboardInterrupt:
-            print("\n[INFO] Test interrupted by user")
+            print("[INFO] Test interrupted by user")
             return 1
         except Exception as e:
             print(f"[ERROR] Unexpected error: {e}")
