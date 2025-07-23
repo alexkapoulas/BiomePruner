@@ -22,6 +22,8 @@ import com.example.alexthundercook.biomepruner.performance.PerformanceTracker;
 import com.example.alexthundercook.biomepruner.util.Pos2D;
 
 import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -402,14 +404,21 @@ public class BiomeSmoother {
                     return;
                 }
 
-                // Standard flood fill for confirmed small areas
+                // Optimized flood fill - pre-collect neighbors to reduce cache contention
+                List<Pos2D> potentialNeighbors = new ArrayList<>(4);
                 for (int dx = -1; dx <= 1; dx++) {
                     for (int dz = -1; dz <= 1; dz++) {
                         if ((dx == 0) == (dz == 0)) continue; // Skip center and diagonals
-
+                        
                         Pos2D neighbor = new Pos2D(current.x() + dx, current.z() + dz);
-
                         if (!visited.contains(neighbor)) {
+                            potentialNeighbors.add(neighbor);
+                        }
+                    }
+                }
+                
+                // Process neighbors with batch-optimized cache access
+                for (Pos2D neighbor : potentialNeighbors) {
                             try {
                                 // Convert biome coordinates back to block coordinates for height/biome lookup
                                 int neighborBlockX = neighbor.x() << 2;
@@ -453,8 +462,6 @@ public class BiomeSmoother {
                                     neighbor.x() << 2, neighbor.z() << 2, e);
                                 continue;
                             }
-                        }
-                    }
                 }
             }
         } finally {

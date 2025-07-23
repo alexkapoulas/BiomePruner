@@ -15,11 +15,47 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.concurrent.locks.ReadWriteLock;
+import java.util.HashMap;
+import java.util.Map;
 
 public class HeightmapCache {
     private static final Logger LOGGER = LoggerFactory.getLogger("BiomePruner");
     private static final int CHUNK_SIZE = 16;
+    
+    // Thread-local cache for height calculations to reduce synchronization overhead
+    private static final int BATCH_SIZE = 8;
+    private final ThreadLocal<HeightBatch> threadLocalBatch = ThreadLocal.withInitial(HeightBatch::new);
+    
+    /**
+     * Thread-local batch for height calculations
+     */
+    private static class HeightBatch {
+        final Map<Long, Float> heightCache = new HashMap<>(BATCH_SIZE);
+        long lastFlushTime = System.currentTimeMillis();
+        
+        void addHeight(int x, int z, float height) {
+            long key = ((long) x << 32) | (z & 0xFFFFFFFFL);
+            heightCache.put(key, height);
+            
+            // Flush batch when full or after timeout
+            if (heightCache.size() >= BATCH_SIZE || 
+                System.currentTimeMillis() - lastFlushTime > 100) {
+                flush();
+            }
+        }
+        
+        Float getHeight(int x, int z) {
+            long key = ((long) x << 32) | (z & 0xFFFFFFFFL);
+            return heightCache.get(key);
+        }
+        
+        void flush() {
+            heightCache.clear();
+            lastFlushTime = System.currentTimeMillis();
+        }
+    }
 
     private final ConcurrentHashMap<ChunkPos, ChunkHeightGrid> gridCache = new ConcurrentHashMap<>();
     private final Striped<ReadWriteLock> chunkLocks = Striped.readWriteLock(128);
@@ -27,22 +63,42 @@ public class HeightmapCache {
     private final ConcurrentLinkedDeque<ChunkPos> lruQueue = new ConcurrentLinkedDeque<>();
 
     /**
-     * Chunk-aligned height grid
+     * Chunk-aligned height grid with lock-free atomic storage
      */
     private static class ChunkHeightGrid {
         final ChunkPos chunkPos;
-        final float[][] heights;
+        final AtomicReferenceArray<AtomicReferenceArray<Float>> heights;
         final AtomicInteger calculatedPoints;
-        volatile boolean[] calculatedMask;
+        final AtomicReferenceArray<Boolean> calculatedMask;
         volatile long lastAccessTime;
+        private final int gridCellsPerChunk;
 
         ChunkHeightGrid(ChunkPos pos, int gridSpacing) {
             this.chunkPos = pos;
-            int gridCellsPerChunk = CHUNK_SIZE / gridSpacing + 1;
-            this.heights = new float[gridCellsPerChunk][gridCellsPerChunk];
+            this.gridCellsPerChunk = CHUNK_SIZE / gridSpacing + 1;
+            
+            // Initialize atomic 2D array for heights
+            this.heights = new AtomicReferenceArray<>(gridCellsPerChunk);
+            for (int i = 0; i < gridCellsPerChunk; i++) {
+                this.heights.set(i, new AtomicReferenceArray<>(gridCellsPerChunk));
+            }
+            
             this.calculatedPoints = new AtomicInteger(0);
-            this.calculatedMask = new boolean[gridCellsPerChunk * gridCellsPerChunk];
+            this.calculatedMask = new AtomicReferenceArray<>(gridCellsPerChunk * gridCellsPerChunk);
+            
+            // Initialize all mask values to false
+            for (int i = 0; i < gridCellsPerChunk * gridCellsPerChunk; i++) {
+                this.calculatedMask.set(i, false);
+            }
+            
             this.lastAccessTime = System.nanoTime();
+        }
+        
+        /**
+         * Get grid cell count for memory estimation
+         */
+        int getGridCellCount() {
+            return gridCellsPerChunk;
         }
     }
 
@@ -57,9 +113,16 @@ public class HeightmapCache {
     }
 
     /**
-     * Get height at any position with interpolation
+     * Get height at any position with interpolation and thread-local batching
      */
     public int getHeight(int blockX, int blockZ) {
+        // Check thread-local cache first to reduce synchronization
+        HeightBatch batch = threadLocalBatch.get();
+        Float cachedHeight = batch.getHeight(blockX, blockZ);
+        if (cachedHeight != null) {
+            return Math.round(cachedHeight);
+        }
+        
         int gridSpacing = ConfigManager.getGridSpacing();
 
         // Find grid cell containing this position
@@ -82,6 +145,9 @@ public class HeightmapCache {
         float h0 = h00 * (1 - fx) + h10 * fx;
         float h1 = h01 * (1 - fx) + h11 * fx;
         float result = h0 * (1 - fz) + h1 * fz;
+        
+        // Cache result in thread-local batch
+        batch.addHeight(blockX, blockZ, result);
 
         return Math.round(result);
     }
@@ -108,33 +174,41 @@ public class HeightmapCache {
 
         // Check bounds
         if (localGridX < 0 || localGridZ < 0 ||
-                localGridX >= grid.heights.length ||
-                localGridZ >= grid.heights[0].length) {
+                localGridX >= grid.heights.length() ||
+                localGridZ >= grid.heights.get(0).length()) {
             // Need to get from neighbor chunk
             return calculateHeightFromNoise(gridX * gridSpacing, gridZ * gridSpacing);
         }
 
-        // Check if already calculated
-        int index = localGridX * grid.heights[0].length + localGridZ;
+        // Check if already calculated using atomic operations
+        int index = localGridX * grid.getGridCellCount() + localGridZ;
 
-        // Use double-checked locking for better performance
-        if (grid.calculatedMask[index]) {
-            return grid.heights[localGridX][localGridZ];
+        // Lock-free double-checked pattern with atomic operations
+        Boolean isCalculated = grid.calculatedMask.get(index);
+        if (isCalculated != null && isCalculated) {
+            Float cachedHeight = grid.heights.get(localGridX).get(localGridZ);
+            if (cachedHeight != null) {
+                return cachedHeight;
+            }
         }
 
-        synchronized (grid.calculatedMask) {
-            // Check again after acquiring lock
-            if (grid.calculatedMask[index]) {
-                return grid.heights[localGridX][localGridZ];
-            }
-
-            // Calculate and store
-            float height = calculateHeightFromNoise(gridX * gridSpacing, gridZ * gridSpacing);
-            grid.heights[localGridX][localGridZ] = height;
-            // Ensure visibility with volatile write
-            grid.calculatedMask[index] = true;
+        // Calculate height value
+        float height = calculateHeightFromNoise(gridX * gridSpacing, gridZ * gridSpacing);
+        
+        // Attempt atomic update with compare-and-set
+        if (grid.calculatedMask.compareAndSet(index, false, true) ||
+            grid.calculatedMask.compareAndSet(index, null, true)) {
+            // We won the race to calculate this height
+            grid.heights.get(localGridX).set(localGridZ, height);
             grid.calculatedPoints.incrementAndGet();
-
+            return height;
+        } else {
+            // Another thread calculated it, use their result
+            Float cachedHeight = grid.heights.get(localGridX).get(localGridZ);
+            if (cachedHeight != null) {
+                return cachedHeight;
+            }
+            // Fallback to our calculated value if cache read failed
             return height;
         }
     }
@@ -175,7 +249,7 @@ public class HeightmapCache {
             ChunkHeightGrid newGrid = new ChunkHeightGrid(pos, gridSpacing);
             gridCache.put(pos, newGrid);
 
-            int gridCellsPerChunk = CHUNK_SIZE / gridSpacing + 1;
+            int gridCellsPerChunk = newGrid.getGridCellCount();
             currentGridPoints.addAndGet(gridCellsPerChunk * gridCellsPerChunk);
             lruQueue.offer(pos);
 
@@ -216,8 +290,7 @@ public class HeightmapCache {
             if (oldest != null) {
                 ChunkHeightGrid removed = gridCache.remove(oldest);
                 if (removed != null) {
-                    int gridSpacing = ConfigManager.getGridSpacing();
-                    int gridCellsPerChunk = CHUNK_SIZE / gridSpacing + 1;
+                    int gridCellsPerChunk = removed.getGridCellCount();
                     currentGridPoints.addAndGet(-(gridCellsPerChunk * gridCellsPerChunk));
                 }
             }
