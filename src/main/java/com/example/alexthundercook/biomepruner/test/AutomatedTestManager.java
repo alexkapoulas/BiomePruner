@@ -185,11 +185,12 @@ public class AutomatedTestManager {
         BlockPos testPos = new BlockPos(testCase.x, testCase.y, testCase.z);
         ServerLevel level = testPlayer.serverLevel();
         
-        // Find safe Y position
-        int safeY = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, testCase.x, testCase.z) + 2;
+        // Position player 128 blocks above sea level looking straight down
+        int seaLevel = level.getSeaLevel();
+        int testY = seaLevel + 128;
         
-        testPlayer.teleportTo(level, testCase.x + 0.5, safeY, testCase.z + 0.5, 
-            testPlayer.getYRot(), testPlayer.getXRot());
+        testPlayer.teleportTo(level, testCase.x + 0.5, testY, testCase.z + 0.5, 
+            testPlayer.getYRot(), 90.0f); // 90° pitch = looking straight down
         
         // Set state to wait for chunk
         currentState = TestState.WAITING_FOR_CHUNK;
@@ -292,8 +293,50 @@ public class AutomatedTestManager {
         // Reset performance tracker
         PerformanceTracker.getInstance().reset();
         
-        // Record starting position
-        performanceTestStartPos = testPlayer.blockPosition();
+        // Parse starting coordinates from config
+        String coordsStr = ConfigManager.getPerformanceTestStartCoords();
+        try {
+            String[] parts = coordsStr.split(",");
+            if (parts.length == 3) {
+                int x = Integer.parseInt(parts[0].trim());
+                int y = Integer.parseInt(parts[1].trim());
+                int z = Integer.parseInt(parts[2].trim());
+                
+                // Set starting position from config
+                performanceTestStartPos = new BlockPos(x, y, z);
+                
+                // Teleport player to starting position
+                ServerLevel level = testPlayer.serverLevel();
+                int safeY = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, x, z) + 2;
+                // Calculate player rotation based on direction
+                String direction = ConfigManager.getPerformanceTestDirection().toUpperCase();
+                float yRot = switch (direction) {
+                    case "NORTH" -> 180.0f;  // Face North
+                    case "SOUTH" -> 0.0f;    // Face South
+                    case "EAST" -> 270.0f;   // Face East
+                    case "WEST" -> 90.0f;    // Face West
+                    default -> 270.0f;       // Default to East
+                };
+                
+                // Calculate view pitch based on height above sea level
+                int seaLevel = level.getSeaLevel();
+                float heightAboveSeaLevel = safeY - seaLevel;
+                float pitch = calculateViewPitch(heightAboveSeaLevel);
+                
+                testPlayer.teleportTo(level, x + 0.5, safeY, z + 0.5, yRot, pitch);
+                
+                LOGGER.info("Performance test starting at configured coordinates: {},{},{}", x, safeY, z);
+            } else {
+                // Fallback to current position
+                performanceTestStartPos = testPlayer.blockPosition();
+                LOGGER.warn("Invalid performance test coordinates format: {}, using current position", coordsStr);
+            }
+        } catch (Exception e) {
+            // Fallback to current position
+            performanceTestStartPos = testPlayer.blockPosition();
+            LOGGER.error("Failed to parse performance test coordinates: {}, using current position", coordsStr, e);
+        }
+        
         performanceTestStartTime = System.currentTimeMillis();
         performanceTestBlocksTraveled = 0;
         
@@ -318,22 +361,68 @@ public class AutomatedTestManager {
         int speed = ConfigManager.getPerformanceTestSpeed();
         ServerLevel level = testPlayer.serverLevel();
         
-        // Move in +X direction
+        // Get movement direction from config
+        String direction = ConfigManager.getPerformanceTestDirection().toUpperCase();
         BlockPos currentPos = testPlayer.blockPosition();
-        BlockPos nextPos = currentPos.offset(speed, 0, 0);
         
-        // Find safe Y
-        int safeY = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.WORLD_SURFACE, 
-            nextPos.getX(), nextPos.getZ()) + 2;
+        // Calculate offset based on direction (very small increments for ultra-smooth movement)
+        double moveDistance = speed * 0.05; // Move in 5% increments for ultra-smooth visual
+        double xOffset = 0, zOffset = 0;
+        switch (direction) {
+            case "NORTH" -> zOffset = -moveDistance;  // Negative Z is North
+            case "SOUTH" -> zOffset = moveDistance;   // Positive Z is South
+            case "EAST" -> xOffset = moveDistance;    // Positive X is East
+            case "WEST" -> xOffset = -moveDistance;   // Negative X is West
+            default -> {
+                LOGGER.warn("Invalid performance test direction: {}, defaulting to EAST", direction);
+                xOffset = moveDistance;
+            }
+        }
         
-        // Teleport
-        testPlayer.teleportTo(level, nextPos.getX() + 0.5, safeY, nextPos.getZ() + 0.5,
-            testPlayer.getYRot(), testPlayer.getXRot());
+        BlockPos nextPos = new BlockPos((int)(currentPos.getX() + xOffset), currentPos.getY(), (int)(currentPos.getZ() + zOffset));
         
-        performanceTestBlocksTraveled += speed;
+        // Use fixed Y from start position
+        int fixedY = performanceTestStartPos.getY();
         
-        // Schedule next movement
-        scheduler.schedule(this::movePlayerForPerformanceTest, 1, TimeUnit.SECONDS);
+        // Teleport with consistent facing direction
+        String facingDirection = ConfigManager.getPerformanceTestDirection().toUpperCase();
+        float yRot = switch (facingDirection) {
+            case "NORTH" -> 180.0f;  // Face North
+            case "SOUTH" -> 0.0f;    // Face South
+            case "EAST" -> 270.0f;   // Face East
+            case "WEST" -> 90.0f;    // Face West
+            default -> 270.0f;       // Default to East
+        };
+        
+        // Calculate view pitch based on height above sea level
+        int seaLevel = level.getSeaLevel();
+        float heightAboveSeaLevel = fixedY - seaLevel;
+        float pitch = calculateViewPitch(heightAboveSeaLevel);
+        
+        testPlayer.teleportTo(level, nextPos.getX() + 0.5, fixedY, nextPos.getZ() + 0.5,
+            yRot, pitch);
+        
+        performanceTestBlocksTraveled += moveDistance;
+        
+        // Schedule next movement with very short interval for ultra-smooth movement
+        scheduler.schedule(this::movePlayerForPerformanceTest, 50, TimeUnit.MILLISECONDS);
+    }
+    
+    /**
+     * Calculate view pitch based on height above sea level
+     * @param heightAboveSeaLevel Height in blocks above sea level
+     * @return Pitch angle in degrees (positive = looking down)
+     */
+    private float calculateViewPitch(float heightAboveSeaLevel) {
+        // Clamp height to reasonable range
+        heightAboveSeaLevel = Math.max(0, Math.min(heightAboveSeaLevel, 128));
+        
+        // Linear interpolation: 0 blocks = 0° pitch, 128 blocks = 45° pitch  
+        // Maximum pitch occurs at 128 blocks above sea level
+        float maxPitch = 45.0f;
+        float maxHeight = 128.0f;
+        
+        return (heightAboveSeaLevel / maxHeight) * maxPitch;
     }
     
     /**

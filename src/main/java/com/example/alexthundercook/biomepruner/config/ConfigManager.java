@@ -202,4 +202,12 @@ public class ConfigManager {
         return BiomePrunerConfig.INSTANCE.testResultsFile.get();
     }
 
+    public static String getPerformanceTestStartCoords() {
+        return BiomePrunerConfig.INSTANCE.performanceTestStartCoords.get();
+    }
+
+    public static String getPerformanceTestDirection() {
+        return BiomePrunerConfig.INSTANCE.performanceTestDirection.get();
+    }
+
 }

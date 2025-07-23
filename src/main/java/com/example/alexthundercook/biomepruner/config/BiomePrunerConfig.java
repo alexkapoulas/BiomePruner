@@ -18,11 +18,7 @@ public class BiomePrunerConfig {
     }
 
     // Configuration values
-    public final ModConfigSpec.BooleanValue enabled;
     public final ModConfigSpec.IntValue microBiomeThreshold;
-    public final ModConfigSpec.BooleanValue debug;
-    public final ModConfigSpec.BooleanValue debugMessages;
-    public final ModConfigSpec.BooleanValue performanceLogging;
 
     // Biome blacklists
     public final ModConfigSpec.ConfigValue<List<? extends String>> preservedBiomes;
@@ -43,36 +39,26 @@ public class BiomePrunerConfig {
     public final ModConfigSpec.BooleanValue opportunisticBatchCalculation;
 
     // Testing settings
+    public final ModConfigSpec.BooleanValue enabled;
+    public final ModConfigSpec.BooleanValue debug;
+    public final ModConfigSpec.BooleanValue debugMessages;
+    public final ModConfigSpec.BooleanValue performanceLogging;
     public final ModConfigSpec.BooleanValue automatedTestingEnabled;
     public final ModConfigSpec.BooleanValue biomeTestsEnabled;
     public final ModConfigSpec.BooleanValue performanceTestsEnabled;
     public final ModConfigSpec.ConfigValue<List<? extends String>> testCoordinates;
     public final ModConfigSpec.IntValue performanceTestDuration;
     public final ModConfigSpec.IntValue performanceTestSpeed;
+    public final ModConfigSpec.ConfigValue<String> performanceTestStartCoords;
+    public final ModConfigSpec.ConfigValue<String> performanceTestDirection;
     public final ModConfigSpec.ConfigValue<String> testResultsFile;
 
     private BiomePrunerConfig(ModConfigSpec.Builder builder) {
         builder.push("general");
 
-        enabled = builder
-                .comment("Master toggle for biome smoothing. Set to false to disable the mod completely.")
-                .define("enabled", true);
-
         microBiomeThreshold = builder
                 .comment("Biome size threshold. Biomes smaller than this are considered 'micro' and will be replaced.")
                 .defineInRange("microBiomeThreshold", 50, 10, 1000);
-
-        debug = builder
-                .comment("Debug mode - logs when fallback logic is used")
-                .define("debug", false);
-
-        debugMessages = builder
-                .comment("Show debug messages in chat when biomes are replaced")
-                .define("debugMessages", false);
-
-        performanceLogging = builder
-                .comment("Enable performance metric collection (slight overhead)")
-                .define("performanceLogging", false);
 
         builder.pop();
 
@@ -176,6 +162,22 @@ public class BiomePrunerConfig {
 
         builder.push("testing");
 
+        enabled = builder
+                .comment("Master toggle for biome smoothing. Set to false to disable the mod completely.")
+                .define("enabled", true);
+
+        debug = builder
+                .comment("Debug mode - logs when fallback logic is used")
+                .define("debug", false);
+
+        debugMessages = builder
+                .comment("Show debug messages in chat when biomes are replaced")
+                .define("debugMessages", false);
+
+        performanceLogging = builder
+                .comment("Enable performance metric collection (slight overhead)")
+                .define("performanceLogging", false);
+
         automatedTestingEnabled = builder
                 .comment("Enable automated testing on server startup")
                 .define("automatedTestingEnabled", false);
@@ -205,6 +207,14 @@ public class BiomePrunerConfig {
         performanceTestSpeed = builder
                 .comment("Movement speed in blocks per second for performance test")
                 .defineInRange("performanceTestSpeed", 10, 1, 50);
+
+        performanceTestStartCoords = builder
+                .comment("Starting coordinates for performance test in format 'x,y,z' (e.g., '1000,64,2000')")
+                .define("performanceTestStartCoords", "0,64,0");
+
+        performanceTestDirection = builder
+                .comment("Direction to move player during performance test (NORTH, SOUTH, EAST, WEST)")
+                .define("performanceTestDirection", "EAST");
 
         testResultsFile = builder
                 .comment("Output file path for test results (relative to game directory)")

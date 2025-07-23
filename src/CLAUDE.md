@@ -64,7 +64,7 @@ BiomePruner eliminates micro biomes (small isolated biome patches) by replacing 
 - **`PerformanceTestResult`**: Data structure for performance test results
 - **`TestReport`**: Combined test report data structure
 
-**Key Pattern**: Automated testing runs when `automatedTestingEnabled` config is true, with separate flags for `biomeTestsEnabled` and `performanceTestsEnabled` to allow selective test execution. Validates biome replacement at specific coordinates and runs performance tests sequentially.
+**Key Pattern**: Automated testing runs when `automatedTestingEnabled` config is true, with separate flags for `biomeTestsEnabled` and `performanceTestsEnabled` to allow selective test execution. Validates biome replacement at specific coordinates and runs performance tests sequentially. Performance tests use configurable starting coordinates and movement direction.
 
 ### `debug/` - Development Tools
 - **`DebugMessenger`**: Debug message system for development feedback

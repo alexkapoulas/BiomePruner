@@ -26,6 +26,16 @@ python claude_tooling/scripts/run_automated_tests.py
 - Generates detailed reports in `claude_tooling/test_output/`
 - Includes automatic log parsing and error extraction
 
+### 3. Configuration Management
+**When you need to modify mod settings:**
+```bash
+python claude_tooling/scripts/config_manager.py read general microBiomeThreshold
+python claude_tooling/scripts/config_manager.py write general microBiomeThreshold 75
+```
+- Safe access to mod configuration (excludes protected testing section)
+- Automatic type detection and validation
+- Creates backups before major changes
+
 ## Project Directory Structure
 
 ```
@@ -35,7 +45,8 @@ BiomePruner/
 │   ├── CLAUDE.md               # Tooling documentation (auto-loaded in tooling context)
 │   ├── scripts/                # Python automation scripts
 │   ├── build_output/           # Build validation reports
-│   └── test_output/            # Test results and logs
+│   ├── test_output/            # Test results and logs
+│   └── config_backups/         # Configuration backups
 ├── src/                        # Source code
 │   ├── CLAUDE.md               # Source code documentation (auto-loaded in src context)
 │   └── main/java/...           # Minecraft mod source files

@@ -55,10 +55,15 @@ LOG_FILES = {
     "debug": INSTANCE_PATH / "logs" / "debug.log"
 }
 
+# PrismLauncher configuration
+PRISM_LAUNCHER_EXE = Path(r"C:\Users\Alex\AppData\Local\Programs\PrismLauncher\prismlauncher.exe")
+PRISM_STARTUP_WAIT_SECONDS = 5
+
 # Timeouts and limits
 TEST_TIMEOUT_SECONDS = 600  # 10 minutes max
 MAX_LOG_SIZE_MB = 50
 GRADLE_TIMEOUT_SECONDS = 300  # 5 minutes for build
+MAX_TEST_RESULT_FILES = 5  # Maximum number of timestamped test result files to keep
 
 
 class MinecraftLogParser:
@@ -194,6 +199,66 @@ class AutomatedTestRunner:
             
         return True
         
+    def is_prism_launcher_running(self) -> bool:
+        """Check if PrismLauncher is currently running."""
+        for process in psutil.process_iter(['pid', 'name']):
+            try:
+                if 'prismlauncher' in process.info['name'].lower():
+                    return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return False
+        
+    def is_prism_launcher_responsive(self) -> bool:
+        """Check if PrismLauncher is running and responsive."""
+        for process in psutil.process_iter(['pid', 'name']):
+            try:
+                if 'prismlauncher' in process.info['name'].lower():
+                    # Try to get process status to check if it's responsive
+                    status = process.status()
+                    # If we can get the status, it's likely responsive
+                    return status in [psutil.STATUS_RUNNING, psutil.STATUS_SLEEPING]
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
+        return False
+        
+    def start_prism_launcher(self) -> bool:
+        """Start PrismLauncher if it's not already running."""
+        if self.is_prism_launcher_running():
+            if self.is_prism_launcher_responsive():
+                print("[INFO] PrismLauncher is already running and responsive")
+                return True
+            else:
+                print("[INFO] PrismLauncher is running but may be unresponsive, leaving it as-is")
+                return True
+                
+        if not PRISM_LAUNCHER_EXE.exists():
+            print(f"[ERROR] PrismLauncher executable not found: {PRISM_LAUNCHER_EXE}")
+            return False
+            
+        try:
+            print("[INFO] Starting PrismLauncher...")
+            subprocess.Popen(
+                [str(PRISM_LAUNCHER_EXE)],
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
+            )
+            
+            # Wait for PrismLauncher to start up
+            print(f"[INFO] Waiting {PRISM_STARTUP_WAIT_SECONDS} seconds for PrismLauncher to start...")
+            time.sleep(PRISM_STARTUP_WAIT_SECONDS)
+            
+            # Verify it started
+            if self.is_prism_launcher_running():
+                print("[INFO] PrismLauncher started successfully")
+                return True
+            else:
+                print("[ERROR] PrismLauncher failed to start within timeout")
+                return False
+                
+        except Exception as e:
+            print(f"[ERROR] Failed to start PrismLauncher: {e}")
+            return False
+        
     def backup_config(self) -> bool:
         """Backup the current configuration."""
         try:
@@ -218,34 +283,34 @@ class AutomatedTestRunner:
                 config['testing'] = {}
                 
             # Enable both the mod itself and automated testing
-            config['general']['enabled'] = True
+            config['testing']['enabled'] = True
             config['testing']['automatedTestingEnabled'] = True
             
             # Enable debug settings for all tests
-            config['general']['debug'] = True
-            config['general']['debugMessages'] = True
+            config['testing']['debug'] = True
+            config['testing']['debugMessages'] = True
             print("[INFO] Enabled debug and debug messages for testing")
             
             # Configure which tests to run based on test_mode
             if self.test_mode == 'biome':
                 config['testing']['biomeTestsEnabled'] = True
                 config['testing']['performanceTestsEnabled'] = False
-                config['general']['performanceLogging'] = False
+                config['testing']['performanceLogging'] = False
                 print("[INFO] Configured for biome tests only")
             elif self.test_mode == 'performance':
                 config['testing']['biomeTestsEnabled'] = False
                 config['testing']['performanceTestsEnabled'] = True
-                config['general']['performanceLogging'] = True
+                config['testing']['performanceLogging'] = True
                 print("[INFO] Configured for performance tests only with performance logging")
             elif self.test_mode == 'biome+performance':
                 config['testing']['biomeTestsEnabled'] = True
                 config['testing']['performanceTestsEnabled'] = True
-                config['general']['performanceLogging'] = True
+                config['testing']['performanceLogging'] = True
                 print("[INFO] Configured for biome tests followed by performance tests with performance logging")
             else:  # 'all' or default
                 config['testing']['biomeTestsEnabled'] = True
                 config['testing']['performanceTestsEnabled'] = True
-                config['general']['performanceLogging'] = True
+                config['testing']['performanceLogging'] = True
                 print("[INFO] Configured for all tests with performance logging")
             
             with open(CONFIG_FILE, 'w') as f:
@@ -303,6 +368,36 @@ class AutomatedTestRunner:
                     print(f"[INFO] Cleaned old file: {file_path.name}")
                 except Exception as e:
                     print(f"[WARN] Could not clean {file_path}: {e}")
+                    
+    def cleanup_old_test_result_files(self):
+        """Keep only the most recent test result files, delete older ones."""
+        results_dir = TEST_OUTPUT_DIR / "results"
+        if not results_dir.exists():
+            return
+            
+        # Find all timestamped test result files
+        pattern = "test_results_*.json"
+        timestamped_files = list(results_dir.glob(pattern))
+        
+        if len(timestamped_files) <= MAX_TEST_RESULT_FILES:
+            return  # No cleanup needed
+            
+        # Sort by modification time (newest first)
+        timestamped_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+        
+        # Keep only the most recent MAX_TEST_RESULT_FILES
+        files_to_keep = timestamped_files[:MAX_TEST_RESULT_FILES]
+        files_to_delete = timestamped_files[MAX_TEST_RESULT_FILES:]
+        
+        for file_path in files_to_delete:
+            try:
+                file_path.unlink()
+                print(f"[INFO] Deleted old test result file: {file_path.name}")
+            except Exception as e:
+                print(f"[WARN] Could not delete old test result file {file_path}: {e}")
+                
+        if files_to_delete:
+            print(f"[INFO] Kept {len(files_to_keep)} most recent test result files, deleted {len(files_to_delete)} old files")
                     
     def launch_gradle_build(self) -> bool:
         """Launch the Gradle buildAndRun task."""
@@ -484,7 +579,7 @@ class AutomatedTestRunner:
             return False
             
     def shutdown_minecraft(self):
-        """Gracefully shutdown Minecraft processes."""
+        """Gracefully shutdown Minecraft processes, keep PrismLauncher running if responsive."""
         print("[INFO] Shutting down Minecraft...")
         
         # First, try to find and terminate Minecraft processes
@@ -508,18 +603,25 @@ class AutomatedTestRunner:
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 continue
                 
-        # Also terminate PrismLauncher if running
-        for process in psutil.process_iter(['pid', 'name']):
-            try:
-                if 'prismlauncher' in process.info['name'].lower():
-                    print(f"[INFO] Terminating PrismLauncher {process.pid}")
-                    process.terminate()
+        # Check PrismLauncher status - only terminate if unresponsive
+        if self.is_prism_launcher_running():
+            if self.is_prism_launcher_responsive():
+                print("[INFO] Keeping PrismLauncher running for faster future test execution")
+            else:
+                print("[INFO] PrismLauncher appears unresponsive, terminating it")
+                for process in psutil.process_iter(['pid', 'name']):
                     try:
-                        process.wait(timeout=5)
-                    except psutil.TimeoutExpired:
-                        process.kill()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+                        if 'prismlauncher' in process.info['name'].lower():
+                            print(f"[INFO] Terminating unresponsive PrismLauncher {process.pid}")
+                            process.terminate()
+                            try:
+                                process.wait(timeout=5)
+                                print(f"[INFO] PrismLauncher {process.pid} terminated")
+                            except psutil.TimeoutExpired:
+                                print(f"[WARN] Force killing PrismLauncher {process.pid}")
+                                process.kill()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
                 
     def collect_test_artifacts(self) -> bool:
         """Collect test results and log files."""
@@ -548,6 +650,9 @@ class AutomatedTestRunner:
                 backup_dest = results_dir / f"test_results_{timestamp}.json"
                 shutil.copy2(RESULTS_FILE, backup_dest)
                 print(f"[INFO] Created timestamped backup: {backup_dest}")
+                
+                # Clean up old timestamped files
+                self.cleanup_old_test_result_files()
                 
             except Exception as e:
                 print(f"[ERROR] Failed to copy test results: {e}")
@@ -667,6 +772,10 @@ class AutomatedTestRunner:
                 return 2
                 
             if not self.enable_automated_testing():
+                return 2
+                
+            # Start PrismLauncher if needed
+            if not self.start_prism_launcher():
                 return 2
                 
             if not self.setup_file_watcher():
