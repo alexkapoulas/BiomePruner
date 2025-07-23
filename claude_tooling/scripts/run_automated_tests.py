@@ -9,7 +9,15 @@ This script orchestrates automated testing by:
 4. Collecting test artifacts and logs
 5. Cleaning up and restoring original configuration
 
-Usage: python run_automated_tests.py
+Usage: 
+  python run_automated_tests.py [--tests TEST_TYPE]
+  
+Options:
+  --tests TEST_TYPE   Specify which tests to run:
+                      'all' (default) - Run both biome and performance tests
+                      'biome' - Run only biome replacement verification tests
+                      'performance' - Run only performance stress tests
+                      'biome+performance' - Run biome tests first, then performance if biome tests pass
 """
 
 import sys
@@ -20,6 +28,7 @@ import shutil
 import subprocess
 import threading
 import re
+import argparse
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict, Any
@@ -149,13 +158,14 @@ class TestResultsWatcher(FileSystemEventHandler):
 class AutomatedTestRunner:
     """Main test runner class."""
     
-    def __init__(self):
+    def __init__(self, test_mode='all'):
         self.gradle_process = None
         self.minecraft_processes = []
         self.observer = None
         self.watcher = None
         self.config_backup = None
         self.start_time = None
+        self.test_mode = test_mode
         
     def check_dependencies(self) -> bool:
         """Check if required dependencies are installed."""
@@ -196,7 +206,7 @@ class AutomatedTestRunner:
             return False
             
     def enable_automated_testing(self) -> bool:
-        """Enable both mod and automated testing in the configuration."""
+        """Enable automated testing with selective test configuration."""
         try:
             with open(CONFIG_FILE, 'r') as f:
                 config = toml.load(f)
@@ -210,6 +220,33 @@ class AutomatedTestRunner:
             # Enable both the mod itself and automated testing
             config['general']['enabled'] = True
             config['testing']['automatedTestingEnabled'] = True
+            
+            # Enable debug settings for all tests
+            config['general']['debug'] = True
+            config['general']['debugMessages'] = True
+            print("[INFO] Enabled debug and debug messages for testing")
+            
+            # Configure which tests to run based on test_mode
+            if self.test_mode == 'biome':
+                config['testing']['biomeTestsEnabled'] = True
+                config['testing']['performanceTestsEnabled'] = False
+                config['general']['performanceLogging'] = False
+                print("[INFO] Configured for biome tests only")
+            elif self.test_mode == 'performance':
+                config['testing']['biomeTestsEnabled'] = False
+                config['testing']['performanceTestsEnabled'] = True
+                config['general']['performanceLogging'] = True
+                print("[INFO] Configured for performance tests only with performance logging")
+            elif self.test_mode == 'biome+performance':
+                config['testing']['biomeTestsEnabled'] = True
+                config['testing']['performanceTestsEnabled'] = True
+                config['general']['performanceLogging'] = True
+                print("[INFO] Configured for biome tests followed by performance tests with performance logging")
+            else:  # 'all' or default
+                config['testing']['biomeTestsEnabled'] = True
+                config['testing']['performanceTestsEnabled'] = True
+                config['general']['performanceLogging'] = True
+                print("[INFO] Configured for all tests with performance logging")
             
             with open(CONFIG_FILE, 'w') as f:
                 toml.dump(config, f)
@@ -579,7 +616,7 @@ class AutomatedTestRunner:
             if analysis['total_biome_tests'] > 0:
                 analysis['success_rate'] = analysis['passed_biome_tests'] / analysis['total_biome_tests']
             else:
-                analysis['success_rate'] = 0.0
+                analysis['success_rate'] = 1.0 if self.test_mode in ['performance'] else 0.0
                 
             return analysis
             
@@ -614,7 +651,7 @@ class AutomatedTestRunner:
         
     def run(self) -> int:
         """Main test execution method."""
-        print("=== BiomePruner Automated Testing ===")
+        print(f"=== BiomePruner Automated Testing ({self.test_mode}) ===")
         self.start_time = time.time()
         
         try:
@@ -663,15 +700,29 @@ class AutomatedTestRunner:
             print(f"Execution time: {elapsed:.1f} seconds")
             
             if analysis['success']:
-                print(f"Biome tests: {analysis['passed_biome_tests']}/{analysis['total_biome_tests']} passed")
-                print(f"Success rate: {analysis['success_rate']:.1%}")
-                print(f"Performance test: {'PASS' if analysis['performance_test_completed'] else 'FAIL'}")
+                # Report based on what tests were configured to run
+                if self.test_mode in ['all', 'biome', 'biome+performance']:
+                    print(f"Biome tests: {analysis['passed_biome_tests']}/{analysis['total_biome_tests']} passed")
+                    print(f"Success rate: {analysis['success_rate']:.1%}")
                 
-                if analysis['success_rate'] == 1.0 and analysis['performance_test_completed']:
-                    print("[SUCCESS] All tests passed!")
+                if self.test_mode in ['all', 'performance', 'biome+performance']:
+                    print(f"Performance test: {'PASS' if analysis['performance_test_completed'] else 'FAIL'}")
+                
+                # Determine overall success based on configured tests
+                biome_success = True
+                performance_success = True
+                
+                if self.test_mode in ['all', 'biome', 'biome+performance']:
+                    biome_success = analysis['success_rate'] == 1.0
+                
+                if self.test_mode in ['all', 'performance', 'biome+performance']:
+                    performance_success = analysis['performance_test_completed']
+                    
+                if biome_success and performance_success:
+                    print("[SUCCESS] All configured tests passed!")
                     return 0
                 else:
-                    print("[PARTIAL] Some tests failed")
+                    print("[PARTIAL] Some configured tests failed")
                     return 1
             else:
                 print(f"[ERROR] {analysis['error']}")
@@ -687,7 +738,36 @@ class AutomatedTestRunner:
             self.cleanup()
 
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description='BiomePruner Automated Testing Script',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Test Types:
+  all              Run both biome and performance tests (default)
+  biome            Run only biome replacement verification tests
+  performance      Run only performance stress tests
+  biome+performance Run biome tests first, then performance if biome tests pass
+
+Examples:
+  python run_automated_tests.py                    # Run all tests
+  python run_automated_tests.py --tests biome      # Run only biome tests
+  python run_automated_tests.py --tests performance # Run only performance tests
+        """)
+    
+    parser.add_argument(
+        '--tests', 
+        choices=['all', 'biome', 'performance', 'biome+performance'],
+        default='all',
+        help='Specify which tests to run (default: all)'
+    )
+    
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    runner = AutomatedTestRunner()
+    args = parse_arguments()
+    runner = AutomatedTestRunner(test_mode=args.tests)
     exit_code = runner.run()
     sys.exit(exit_code)

@@ -178,6 +178,14 @@ public class ConfigManager {
         return BiomePrunerConfig.INSTANCE.automatedTestingEnabled.get();
     }
 
+    public static boolean areBiomeTestsEnabled() {
+        return BiomePrunerConfig.INSTANCE.biomeTestsEnabled.get();
+    }
+
+    public static boolean arePerformanceTestsEnabled() {
+        return BiomePrunerConfig.INSTANCE.performanceTestsEnabled.get();
+    }
+
     public static List<? extends String> getTestCoordinates() {
         return BiomePrunerConfig.INSTANCE.testCoordinates.get();
     }

@@ -48,7 +48,7 @@ BiomePruner eliminates micro biomes (small isolated biome patches) by replacing 
 - Biome blacklists (preserved, excluded)
 - Performance settings (cache sizes, grid spacing)
 - Debug options (messages, performance logging)
-- Testing settings (automated testing configuration)
+- Testing settings (automated testing configuration with selective test execution)
 
 ### `command/` - In-Game Commands
 - **`BiomePrunerCommands`**: Command registration and handlers
@@ -64,7 +64,7 @@ BiomePruner eliminates micro biomes (small isolated biome patches) by replacing 
 - **`PerformanceTestResult`**: Data structure for performance test results
 - **`TestReport`**: Combined test report data structure
 
-**Key Pattern**: Automated testing runs when `automatedTestingEnabled` config is true, validates biome replacement at specific coordinates and runs performance tests.
+**Key Pattern**: Automated testing runs when `automatedTestingEnabled` config is true, with separate flags for `biomeTestsEnabled` and `performanceTestsEnabled` to allow selective test execution. Validates biome replacement at specific coordinates and runs performance tests sequentially.
 
 ### `debug/` - Development Tools
 - **`DebugMessenger`**: Debug message system for development feedback

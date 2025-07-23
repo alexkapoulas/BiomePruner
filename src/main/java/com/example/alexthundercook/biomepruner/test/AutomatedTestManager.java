@@ -93,6 +93,12 @@ public class AutomatedTestManager {
      * Load test cases from configuration
      */
     private void loadTestCases() {
+        if (!ConfigManager.areBiomeTestsEnabled()) {
+            LOGGER.info("Biome tests disabled, skipping test case loading");
+            testCases.clear();
+            return;
+        }
+        
         List<? extends String> testCoords = ConfigManager.getTestCoordinates();
         
         for (String coordStr : testCoords) {
@@ -133,11 +139,22 @@ public class AutomatedTestManager {
         }
         
         testPlayer = players.get(0);
-        currentState = TestState.TESTING_BIOME;
-        LOGGER.info("Player found: {}, starting biome tests", testPlayer.getName().getString());
+        LOGGER.info("Player found: {}", testPlayer.getName().getString());
         
-        // Start first test
-        runNextBiomeTest();
+        // Check what tests to run
+        if (ConfigManager.areBiomeTestsEnabled() && !testCases.isEmpty()) {
+            currentState = TestState.TESTING_BIOME;
+            LOGGER.info("Starting biome tests");
+            runNextBiomeTest();
+        } else if (ConfigManager.arePerformanceTestsEnabled()) {
+            currentState = TestState.PERFORMANCE_TEST;
+            LOGGER.info("Starting performance test (biome tests disabled or no test cases)");
+            startPerformanceTest();
+        } else {
+            currentState = TestState.COMPLETED;
+            LOGGER.info("No tests enabled, completing immediately");
+            writeTestResults();
+        }
     }
     
     /**
@@ -145,10 +162,17 @@ public class AutomatedTestManager {
      */
     private void runNextBiomeTest() {
         if (currentTestIndex >= testCases.size()) {
-            // All biome tests complete, start performance test
-            LOGGER.info("All biome tests complete, starting performance test");
-            currentState = TestState.PERFORMANCE_TEST;
-            startPerformanceTest();
+            // All biome tests complete, check if performance test should run
+            if (ConfigManager.arePerformanceTestsEnabled()) {
+                LOGGER.info("All biome tests complete, starting performance test");
+                currentState = TestState.PERFORMANCE_TEST;
+                startPerformanceTest();
+            } else {
+                LOGGER.info("All biome tests complete, performance tests disabled");
+                currentState = TestState.COMPLETED;
+                writeTestResults();
+                LOGGER.info("All tests completed!");
+            }
             return;
         }
         

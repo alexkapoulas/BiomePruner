@@ -44,6 +44,8 @@ public class BiomePrunerConfig {
 
     // Testing settings
     public final ModConfigSpec.BooleanValue automatedTestingEnabled;
+    public final ModConfigSpec.BooleanValue biomeTestsEnabled;
+    public final ModConfigSpec.BooleanValue performanceTestsEnabled;
     public final ModConfigSpec.ConfigValue<List<? extends String>> testCoordinates;
     public final ModConfigSpec.IntValue performanceTestDuration;
     public final ModConfigSpec.IntValue performanceTestSpeed;
@@ -177,6 +179,14 @@ public class BiomePrunerConfig {
         automatedTestingEnabled = builder
                 .comment("Enable automated testing on server startup")
                 .define("automatedTestingEnabled", false);
+
+        biomeTestsEnabled = builder
+                .comment("Enable biome replacement verification tests")
+                .define("biomeTestsEnabled", true);
+
+        performanceTestsEnabled = builder
+                .comment("Enable performance stress tests")
+                .define("performanceTestsEnabled", true);
 
         testCoordinates = builder
                 .comment("Test coordinates in format 'x,y,z,expectedBiome' (e.g., '1000,64,2000,minecraft:plains')")
