@@ -2,7 +2,12 @@ package com.example.alexthundercook.biomepruner.cache;
 
 import com.google.common.util.concurrent.Striped;
 import net.minecraft.core.Holder;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.biome.Biome;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -46,6 +51,77 @@ public class BiomeRegionCache {
 
     public static BiomeRegionCache getInstance() {
         return INSTANCE;
+    }
+    
+    /**
+     * Validate that a biome holder can be safely used in Minecraft's decoration system
+     * This prevents IndexOutOfBoundsException with index -1 during chunk decoration
+     */
+    private boolean isValidBiomeHolder(Holder<Biome> biomeHolder) {
+        if (biomeHolder == null) {
+            return false;
+        }
+        
+        // Check if biome holder is bound to registry
+        if (!biomeHolder.isBound()) {
+            return false;
+        }
+        
+        // Check if biome holder has a valid registry key
+        if (biomeHolder.unwrapKey().isEmpty()) {
+            return false;
+        }
+        
+        try {
+            // Try to get the server and registry for validation
+            MinecraftServer server = ServerLifecycleHooks.getCurrentServer();
+            if (server != null) {
+                Registry<Biome> biomeRegistry = server.registryAccess().registryOrThrow(Registries.BIOME);
+                ResourceKey<Biome> biomeKey = biomeHolder.unwrapKey().get();
+                
+                // Check if the biome is actually registered in the current registry
+                if (!biomeRegistry.containsKey(biomeKey)) {
+                    return false;
+                }
+                
+                // Try to get the registry ID to ensure it's not -1
+                int registryId = biomeRegistry.getId(biomeRegistry.get(biomeKey));
+                if (registryId < 0) {
+                    return false;
+                }
+                
+                // Additional validation: ensure the biome can be retrieved by ID
+                Biome retrievedBiome = biomeRegistry.byId(registryId);
+                if (retrievedBiome == null) {
+                    return false;
+                }
+            }
+            
+            return true;
+            
+        } catch (Exception e) {
+            LOGGER.debug("BiomePruner: Biome holder validation error", e);
+            return false;
+        }
+    }
+    
+    /**
+     * Validate and potentially refresh a cached BiomeResult
+     * Returns null if the cached result is invalid and should be removed
+     */
+    private BiomeResult validateCachedResult(BiomeResult cachedResult) {
+        if (cachedResult == null) {
+            return null;
+        }
+        
+        if (!isValidBiomeHolder(cachedResult.biome())) {
+            if (ConfigManager.isDebugMessagesEnabled()) {
+                LOGGER.debug("BiomePruner: Removing invalid cached biome result");
+            }
+            return null;
+        }
+        
+        return cachedResult;
     }
 
     /**
@@ -165,18 +241,31 @@ public class BiomeRegionCache {
             LocalPos localPos = new LocalPos(x & 511, y, z & 511);
             BiomeResult existing = region.biomeResults.get(localPos);
             if (existing != null) {
-                hits.incrementAndGet();
-                if (tracker != null) tracker.recordCacheHit();
-                return existing;
+                // Validate cached result before returning
+                BiomeResult validatedResult = validateCachedResult(existing);
+                if (validatedResult != null) {
+                    hits.incrementAndGet();
+                    if (tracker != null) tracker.recordCacheHit();
+                    return validatedResult;
+                } else {
+                    // Remove invalid cached result
+                    region.biomeResults.remove(localPos);
+                }
             }
 
             // Check column cache
             int columnKey = Region.getColumnKey(x & 511, z & 511);
             MicroBiomeColumn column = region.microBiomeColumns.get(columnKey);
             if (column != null && column.originalSurfaceBiome.equals(vanillaBiome)) {
-                hits.incrementAndGet();
-                if (tracker != null) tracker.recordCacheHit();
-                return new BiomeResult(column.replacement, true);
+                // Validate the replacement biome before returning
+                if (isValidBiomeHolder(column.replacement)) {
+                    hits.incrementAndGet();
+                    if (tracker != null) tracker.recordCacheHit();
+                    return new BiomeResult(column.replacement, true);
+                } else {
+                    // Remove invalid column cache entry
+                    region.microBiomeColumns.remove(columnKey);
+                }
             }
         } finally {
             if (cacheTimer != null) cacheTimer.close();
@@ -195,17 +284,30 @@ public class BiomeRegionCache {
             LocalPos localPos = new LocalPos(x & 511, y, z & 511);
             BiomeResult existing = region.biomeResults.get(localPos);
             if (existing != null) {
-                hits.incrementAndGet();
-                if (tracker != null) tracker.recordCacheHit();
-                return existing;
+                // Validate cached result before returning
+                BiomeResult validatedResult = validateCachedResult(existing);
+                if (validatedResult != null) {
+                    hits.incrementAndGet();
+                    if (tracker != null) tracker.recordCacheHit();
+                    return validatedResult;
+                } else {
+                    // Remove invalid cached result
+                    region.biomeResults.remove(localPos);
+                }
             }
 
             int columnKey = Region.getColumnKey(x & 511, z & 511);
             MicroBiomeColumn column = region.microBiomeColumns.get(columnKey);
             if (column != null && column.originalSurfaceBiome.equals(vanillaBiome)) {
-                hits.incrementAndGet();
-                if (tracker != null) tracker.recordCacheHit();
-                return new BiomeResult(column.replacement, true);
+                // Validate the replacement biome before returning
+                if (isValidBiomeHolder(column.replacement)) {
+                    hits.incrementAndGet();
+                    if (tracker != null) tracker.recordCacheHit();
+                    return new BiomeResult(column.replacement, true);
+                } else {
+                    // Remove invalid column cache entry
+                    region.microBiomeColumns.remove(columnKey);
+                }
             }
 
             // Compute the result
@@ -450,7 +552,16 @@ public class BiomeRegionCache {
         Region region = activeRegions.get(regionKey);
         if (region != null) {
             SurfacePos surfacePos = new SurfacePos(x & 511, z & 511);
-            return region.surfaceResults.get(surfacePos);
+            BiomeResult cachedResult = region.surfaceResults.get(surfacePos);
+            
+            // Validate cached result before returning
+            BiomeResult validatedResult = validateCachedResult(cachedResult);
+            if (validatedResult == null && cachedResult != null) {
+                // Remove invalid cached result
+                region.surfaceResults.remove(surfacePos);
+            }
+            
+            return validatedResult;
         }
         return null;
     }
@@ -563,5 +674,42 @@ public class BiomeRegionCache {
                 activeRegions.size(),
                 memoryUsage.get() / 1024.0 / 1024.0,
                 hitRate * 100);
+    }
+
+    /**
+     * Clear all cached data - CRITICAL for world unloading
+     * Must be called when switching worlds to prevent cross-world contamination
+     */
+    public void clearAll() {
+        LOGGER.info("BiomePruner: Clearing all cache data for world unload");
+        
+        // Clear all cached regions and their data
+        activeRegions.clear();
+        
+        // Clear all flood fill tasks
+        floodFillTasks.clear();
+        
+        // Reset memory usage counter
+        memoryUsage.set(0);
+        
+        // Reset statistics
+        hits.set(0);
+        misses.set(0);
+        
+        LOGGER.info("BiomePruner: Cache cleared successfully");
+    }
+    
+    /**
+     * Get memory usage in bytes
+     */
+    public long getMemoryUsage() {
+        return memoryUsage.get();
+    }
+    
+    /**
+     * Get number of cached regions
+     */
+    public int getCachedRegionCount() {
+        return activeRegions.size();
     }
 }

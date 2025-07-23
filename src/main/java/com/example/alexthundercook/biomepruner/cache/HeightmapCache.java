@@ -223,4 +223,34 @@ public class HeightmapCache {
             }
         }
     }
+
+    /**
+     * Clear all cached data - CRITICAL for world unloading
+     * Must be called when switching worlds to prevent cross-world contamination
+     */
+    public void clearAll() {
+        LOGGER.info("BiomePruner: Clearing heightmap cache data for world unload");
+        
+        // Clear all cached height grids
+        gridCache.clear();
+        
+        // Clear LRU queue
+        lruQueue.clear();
+        
+        // Reset grid points counter
+        currentGridPoints.set(0);
+        
+        // Clear biome source reference to prevent memory leaks
+        biomeSource = null;
+        
+        LOGGER.info("BiomePruner: Heightmap cache cleared successfully");
+    }
+    
+    /**
+     * Get cache statistics
+     */
+    public String getStatistics() {
+        return String.format("Heightmap cache - Chunks: %d, Grid points: %d", 
+            gridCache.size(), currentGridPoints.get());
+    }
 }

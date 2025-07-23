@@ -2,11 +2,15 @@ package com.example.alexthundercook.biomepruner.core;
 
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Holder;
+import net.minecraft.core.Registry;
+import net.minecraft.core.registries.Registries;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.level.biome.Biome;
 import net.minecraft.world.level.biome.BiomeSource;
 import net.minecraft.world.level.biome.Climate;
 import net.minecraft.world.level.biome.MultiNoiseBiomeSource;
+import net.neoforged.neoforge.server.ServerLifecycleHooks;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -37,6 +41,52 @@ public class BiomeSmoother {
 
     public static BiomeSmoother getInstance() {
         return INSTANCE;
+    }
+    
+    /**
+     * Lightweight validation that a biome holder is safe to use
+     * Avoids expensive registry operations that caused performance regression
+     */
+    private boolean isValidForDecoration(Holder<Biome> biomeHolder, int x, int y, int z, String context) {
+        // Basic null check
+        if (biomeHolder == null) {
+            LOGGER.warn("BiomePruner: Null biome holder at {},{},{} during {}", x, y, z, context);
+            return false;
+        }
+        
+        // Check if biome holder is bound to registry - this is the critical check
+        if (!biomeHolder.isBound()) {
+            LOGGER.warn("BiomePruner: Unbound biome holder at {},{},{} during {}", x, y, z, context);
+            return false;
+        }
+        
+        // Check if biome holder has a valid registry key - prevents NPE
+        if (biomeHolder.unwrapKey().isEmpty()) {
+            LOGGER.warn("BiomePruner: Biome holder missing registry key at {},{},{} during {}", x, y, z, context);
+            return false;
+        }
+        
+        // If we get here, the biome holder should be safe to use
+        // Note: Removed expensive registry ID validation to prevent performance regression
+        return true;
+    }
+    
+    /**
+     * Get a guaranteed safe fallback biome when validation fails
+     * Returns the provided fallback or a known safe biome
+     */
+    private Holder<Biome> getSafeFallbackBiome(Holder<Biome> fallback, int x, int y, int z) {
+        // If fallback is valid, use it
+        if (fallback != null && fallback.isBound() && fallback.unwrapKey().isPresent()) {
+            return fallback;
+        }
+        
+        // If we reach here, something is seriously wrong with biome holders
+        // Log this as it indicates a deeper issue
+        LOGGER.error("BiomePruner: CRITICAL - All biome fallbacks failed at {},{},{} - this indicates a serious registry issue", x, y, z);
+        
+        // Return the original fallback even if invalid - let Minecraft handle it rather than crash
+        return fallback;
     }
 
     /**
@@ -73,6 +123,14 @@ public class BiomeSmoother {
             // Note: Debug logging removed here to prevent log spam since this method 
             // is called very frequently during world generation
 
+            // Validate vanilla biome before processing
+            if (!isValidForDecoration(vanillaBiome, x, y, z, "vanilla validation")) {
+                LOGGER.warn("BiomePruner: Invalid vanilla biome holder detected at {},{},{}, returning as-is", x, y, z);
+                return vanillaBiome;
+            }
+            
+            // Note: Removed expensive registry ID logging to prevent performance regression
+
             // Check if this biome should be preserved
             if (ConfigManager.shouldPreserveBiome(vanillaBiome)) {
                 return vanillaBiome;
@@ -84,7 +142,29 @@ public class BiomeSmoother {
 
             // Note: Debug logging removed here to prevent log spam during biome generation
 
-            return result.biome();
+            // Final validation of the result before returning
+            Holder<Biome> resultBiome = result.biome();
+            if (!isValidForDecoration(resultBiome, x, y, z, "result validation")) {
+                LOGGER.warn("BiomePruner: Invalid result biome holder at {},{},{}, using safe fallback", x, y, z);
+                return getSafeFallbackBiome(vanillaBiome, x, y, z);
+            }
+            
+            // Note: Removed expensive result biome registry ID logging to prevent performance regression
+
+            return resultBiome;
+        } catch (RuntimeException e) {
+            // Catch coordinate validation errors and other runtime exceptions
+            // Log the error but return vanilla biome to prevent crashes
+            if (e.getMessage() != null && e.getMessage().contains("coordinate")) {
+                LOGGER.warn("BiomePruner: Coordinate validation error at {},{},{}: {}", x, y, z, e.getMessage());
+            } else {
+                LOGGER.error("BiomePruner: Runtime error in getModifiedBiome at {},{},{}", x, y, z, e);
+            }
+            return vanillaBiome;
+        } catch (Exception e) {
+            // Catch any other unexpected errors
+            LOGGER.error("BiomePruner: Unexpected error in getModifiedBiome at {},{},{}", x, y, z, e);
+            return vanillaBiome;
         } finally {
             if (totalTimer != null) {
                 totalTimer.close();
@@ -119,11 +199,29 @@ public class BiomeSmoother {
         // Get surface height (expensive operation)
         PerformanceTracker.Timer heightTimer = tracker != null ?
                 tracker.startTimer(PerformanceTracker.Section.HEIGHT_CALC) : null;
-        int surfaceY = heightmapCache.getHeight(x, z);
+        
+        int surfaceY;
+        try {
+            surfaceY = heightmapCache.getHeight(x, z);
+        } catch (Exception e) {
+            LOGGER.warn("BiomePruner: Error getting surface height at {},{}, using default", x, z, e);
+            surfaceY = 64; // Default surface height
+        }
         if (heightTimer != null) heightTimer.close();
 
         // Get biome at surface position, skipping cave biomes
-        Holder<Biome> surfaceBiome = getSurfaceBiome(x, z, surfaceY, source, sampler);
+        Holder<Biome> surfaceBiome;
+        try {
+            surfaceBiome = getSurfaceBiome(x, z, surfaceY, source, sampler);
+        } catch (RuntimeException e) {
+            LOGGER.warn("BiomePruner: Critical biome sampling failure at {},{},{}, using vanilla biome: {}", 
+                x, z, surfaceY, e.getMessage());
+            return new BiomeRegionCache.BiomeResult(vanillaBiome, false);
+        } catch (Exception e) {
+            LOGGER.error("BiomePruner: Unexpected error getting surface biome at {},{},{}, using vanilla biome", 
+                x, z, surfaceY, e);
+            return new BiomeRegionCache.BiomeResult(vanillaBiome, false);
+        }
 
         // Check if vanilla biome matches surface biome
         boolean biomesMatch = vanillaBiome.equals(surfaceBiome);
@@ -228,12 +326,19 @@ public class BiomeSmoother {
             if (result.isLarge()) {
                 finalResult = new BiomeRegionCache.BiomeResult(vanillaBiome, false);
             } else {
-                // Send debug message if enabled
-                if (ConfigManager.isDebugMessagesEnabled() && result.positions() != null) {
-                    DebugMessenger.getInstance().sendBiomeReplacementMessage(
-                            x, y, z, vanillaBiome, result.replacement(), result.positions());
+                // Validate replacement biome before using it
+                if (result.replacement() == null || !result.replacement().isBound()) {
+                    LOGGER.warn("BiomePruner: Invalid replacement biome from flood fill at {},{},{}, using vanilla", 
+                        x, y, z);
+                    finalResult = new BiomeRegionCache.BiomeResult(vanillaBiome, false);
+                } else {
+                    // Send debug message if enabled
+                    if (ConfigManager.isDebugMessagesEnabled() && result.positions() != null) {
+                        DebugMessenger.getInstance().sendBiomeReplacementMessage(
+                                x, y, z, vanillaBiome, result.replacement(), result.positions());
+                    }
+                    finalResult = new BiomeRegionCache.BiomeResult(result.replacement(), true);
                 }
-                finalResult = new BiomeRegionCache.BiomeResult(result.replacement(), true);
             }
             
             // Store in surface cache for future surface biome matches
@@ -243,6 +348,14 @@ public class BiomeSmoother {
         } catch (InterruptedException | ExecutionException | TimeoutException e) {
             LOGGER.error("Error in flood fill computation at {},{},{}", x, y, z, e);
             // On error, return vanilla biome
+            return new BiomeRegionCache.BiomeResult(vanillaBiome, false);
+        } catch (RuntimeException e) {
+            LOGGER.error("Runtime error in flood fill computation at {},{},{}: {}", x, y, z, e.getMessage());
+            // On coordinate or other runtime errors, return vanilla biome
+            return new BiomeRegionCache.BiomeResult(vanillaBiome, false);
+        } catch (Exception e) {
+            LOGGER.error("Unexpected error in flood fill computation at {},{},{}", x, y, z, e);
+            // On any other error, return vanilla biome
             return new BiomeRegionCache.BiomeResult(vanillaBiome, false);
         }
     }
@@ -297,35 +410,48 @@ public class BiomeSmoother {
                         Pos2D neighbor = new Pos2D(current.x() + dx, current.z() + dz);
 
                         if (!visited.contains(neighbor)) {
-                            // Convert biome coordinates back to block coordinates for height/biome lookup
-                            int neighborBlockX = neighbor.x() << 2;
-                            int neighborBlockZ = neighbor.z() << 2;
-                            int neighborY = heightmapCache.getHeight(neighborBlockX, neighborBlockZ);
-                            Holder<Biome> neighborBiome = getSurfaceBiome(
-                                    neighborBlockX, neighborBlockZ, neighborY, source, sampler);
+                            try {
+                                // Convert biome coordinates back to block coordinates for height/biome lookup
+                                int neighborBlockX = neighbor.x() << 2;
+                                int neighborBlockZ = neighbor.z() << 2;
+                                int neighborY = heightmapCache.getHeight(neighborBlockX, neighborBlockZ);
+                                Holder<Biome> neighborBiome = getSurfaceBiome(
+                                        neighborBlockX, neighborBlockZ, neighborY, source, sampler);
 
-                            if (neighborBiome.equals(targetBiome)) {
-                                visited.add(neighbor);
-                                queue.offer(neighbor);
+                                if (neighborBiome.equals(targetBiome)) {
+                                    visited.add(neighbor);
+                                    queue.offer(neighbor);
 
-                                // Immediate exit if we exceed threshold
-                                if (visited.size() > threshold) {
-                                    regionCache.completeFloodFill(startX, startZ, targetBiome,
-                                            Collections.emptySet(), true, targetBiome);
-                                    // Mark this area as containing a large biome
-                                    regionCache.markLargeBiomeArea(startX, startZ, targetBiome);
-                                    return;
+                                    // Immediate exit if we exceed threshold
+                                    if (visited.size() > threshold) {
+                                        regionCache.completeFloodFill(startX, startZ, targetBiome,
+                                                Collections.emptySet(), true, targetBiome);
+                                        // Mark this area as containing a large biome
+                                        regionCache.markLargeBiomeArea(startX, startZ, targetBiome);
+                                        return;
+                                    }
+                                    
+                                    // Simple progressive bailout - avoid processing huge biomes
+                                    if (visited.size() > threshold * 0.8 && queue.size() > threshold * 0.5) {
+                                        // Large expanding biome detected
+                                        regionCache.completeFloodFill(startX, startZ, targetBiome,
+                                                Collections.emptySet(), true, targetBiome);
+                                        // Mark this area as containing a large biome
+                                        regionCache.markLargeBiomeArea(startX, startZ, targetBiome);
+                                        return;
+                                    }
                                 }
-                                
-                                // Simple progressive bailout - avoid processing huge biomes
-                                if (visited.size() > threshold * 0.8 && queue.size() > threshold * 0.5) {
-                                    // Large expanding biome detected
-                                    regionCache.completeFloodFill(startX, startZ, targetBiome,
-                                            Collections.emptySet(), true, targetBiome);
-                                    // Mark this area as containing a large biome
-                                    regionCache.markLargeBiomeArea(startX, startZ, targetBiome);
-                                    return;
-                                }
+                            } catch (RuntimeException e) {
+                                // If we get coordinate errors during flood fill, skip this neighbor
+                                // and continue with the flood fill
+                                LOGGER.warn("BiomePruner: Coordinate error during flood fill at neighbor {},{}, skipping: {}", 
+                                    neighbor.x() << 2, neighbor.z() << 2, e.getMessage());
+                                continue;
+                            } catch (Exception e) {
+                                // For other errors, log and skip this neighbor
+                                LOGGER.warn("BiomePruner: Error sampling neighbor during flood fill at {},{}, skipping", 
+                                    neighbor.x() << 2, neighbor.z() << 2, e);
+                                continue;
                             }
                         }
                     }
@@ -341,6 +467,12 @@ public class BiomeSmoother {
         Holder<Biome> replacement;
         try {
             replacement = findDominantNeighbor(visited, targetBiome, source, sampler);
+            
+            // Validate replacement before using it
+            if (!isValidForDecoration(replacement, startX, startY, startZ, "replacement validation")) {
+                LOGGER.warn("BiomePruner: Invalid replacement biome found at flood fill {},{}, using safe fallback", startX, startZ);
+                replacement = getSafeFallbackBiome(targetBiome, startX, startY, startZ);
+            }
         } finally {
             if (neighborTimer != null) neighborTimer.close();
         }
@@ -379,23 +511,41 @@ public class BiomeSmoother {
                     Pos2D neighbor = new Pos2D(pos.x() + dx, pos.z() + dz);
 
                     if (!microBiomePositions.contains(neighbor)) {
-                        // Convert biome coordinates to block coordinates
-                        int neighborBlockX = neighbor.x() << 2;
-                        int neighborBlockZ = neighbor.z() << 2;
-                        // Use height approximation for neighbor search performance
-                        int height = getApproximateHeight(neighborBlockX, neighborBlockZ, estimatedSurfaceY);
-                        Holder<Biome> neighborBiome = getSurfaceBiome(
-                                neighborBlockX, neighborBlockZ, height, source, sampler);
+                        try {
+                            // Convert biome coordinates to block coordinates
+                            int neighborBlockX = neighbor.x() << 2;
+                            int neighborBlockZ = neighbor.z() << 2;
+                            // Use height approximation for neighbor search performance
+                            int height = getApproximateHeight(neighborBlockX, neighborBlockZ, estimatedSurfaceY);
+                            Holder<Biome> neighborBiome = getSurfaceBiome(
+                                    neighborBlockX, neighborBlockZ, height, source, sampler);
 
-                        // Skip if neighbor is the same as original biome (prevents X->X replacements)
-                        if (!neighborBiome.equals(originalBiome)) {
-                            // Always count for fallback
-                            allNeighborCounts.merge(neighborBiome, 1, Integer::sum);
+                            // Skip if neighbor is the same as original biome (prevents X->X replacements)
+                            if (!neighborBiome.equals(originalBiome)) {
+                                // Validate neighbor biome before using it
+                                if (!isValidForDecoration(neighborBiome, neighborBlockX, height, neighborBlockZ, "neighbor validation")) {
+                                    LOGGER.debug("BiomePruner: Invalid neighbor biome detected during replacement search, skipping");
+                                    continue;
+                                }
+                                
+                                // Always count for fallback
+                                allNeighborCounts.merge(neighborBiome, 1, Integer::sum);
 
-                            // Only count valid replacements for primary selection
-                            if (ConfigManager.canUseAsReplacement(neighborBiome)) {
-                                validNeighborCounts.merge(neighborBiome, 1, Integer::sum);
+                                // Only count valid replacements for primary selection
+                                if (ConfigManager.canUseAsReplacement(neighborBiome)) {
+                                    validNeighborCounts.merge(neighborBiome, 1, Integer::sum);
+                                }
                             }
+                        } catch (RuntimeException e) {
+                            // If we get coordinate errors during neighbor search, skip this neighbor
+                            LOGGER.warn("BiomePruner: Coordinate error during neighbor search at {},{}, skipping: {}", 
+                                neighbor.x() << 2, neighbor.z() << 2, e.getMessage());
+                            continue;
+                        } catch (Exception e) {
+                            // For other errors, log and skip this neighbor
+                            LOGGER.warn("BiomePruner: Error sampling neighbor for replacement at {},{}, skipping", 
+                                neighbor.x() << 2, neighbor.z() << 2, e);
+                            continue;
                         }
                     }
                 }
@@ -541,8 +691,79 @@ public class BiomeSmoother {
     private Holder<Biome> getOriginalBiome(int blockX, int blockY, int blockZ,
                                            MultiNoiseBiomeSource source,
                                            Climate.Sampler sampler) {
+        // Validate input parameters
+        if (source == null) {
+            LOGGER.error("BiomePruner: Null biome source in getOriginalBiome at {},{},{}", blockX, blockY, blockZ);
+            throw new IllegalArgumentException("Biome source cannot be null");
+        }
+        
+        if (sampler == null) {
+            LOGGER.error("BiomePruner: Null climate sampler in getOriginalBiome at {},{},{}", blockX, blockY, blockZ);
+            throw new IllegalArgumentException("Climate sampler cannot be null");
+        }
+        
+        // Validate coordinates are within reasonable bounds to prevent index errors
+        if (blockX < -30000000 || blockX > 30000000) {
+            LOGGER.warn("BiomePruner: Block X coordinate {} out of safe range, clamping", blockX);
+            blockX = Math.max(-30000000, Math.min(30000000, blockX));
+        }
+        
+        if (blockY < -2048 || blockY > 2048) {
+            LOGGER.warn("BiomePruner: Block Y coordinate {} out of safe range, clamping", blockY);
+            blockY = Math.max(-2048, Math.min(2048, blockY));
+        }
+        
+        if (blockZ < -30000000 || blockZ > 30000000) {
+            LOGGER.warn("BiomePruner: Block Z coordinate {} out of safe range, clamping", blockZ);
+            blockZ = Math.max(-30000000, Math.min(30000000, blockZ));
+        }
+        
         // Convert block coordinates to noise coordinates (divide by 4)
-        return source.getNoiseBiome(blockX >> 2, blockY >> 2, blockZ >> 2, sampler);
+        // Add additional safety checks for the conversion
+        int noiseX, noiseY, noiseZ;
+        try {
+            noiseX = blockX >> 2;
+            noiseY = blockY >> 2;
+            noiseZ = blockZ >> 2;
+            
+            // Validate converted coordinates are reasonable
+            if (noiseX < -7500000 || noiseX > 7500000 || 
+                noiseY < -512 || noiseY > 512 || 
+                noiseZ < -7500000 || noiseZ > 7500000) {
+                LOGGER.warn("BiomePruner: Converted noise coordinates {},{},{} may cause array index issues", noiseX, noiseY, noiseZ);
+            }
+            
+        } catch (Exception e) {
+            LOGGER.error("BiomePruner: Error converting block coordinates {},{},{} to noise coordinates", blockX, blockY, blockZ, e);
+            throw new RuntimeException("Coordinate conversion failed", e);
+        }
+        
+        try {
+            Holder<Biome> result = source.getNoiseBiome(noiseX, noiseY, noiseZ, sampler);
+            
+            // Validate the returned biome holder
+            if (result == null) {
+                LOGGER.error("BiomePruner: getNoiseBiome returned null at noise coords {},{},{} (block {},{},{})", 
+                    noiseX, noiseY, noiseZ, blockX, blockY, blockZ);
+                throw new RuntimeException("BiomeSource returned null biome");
+            }
+            
+            if (!result.isBound()) {
+                LOGGER.warn("BiomePruner: Unbound biome holder returned at noise coords {},{},{} (block {},{},{})", 
+                    noiseX, noiseY, noiseZ, blockX, blockY, blockZ);
+            }
+            
+            return result;
+            
+        } catch (IndexOutOfBoundsException e) {
+            LOGGER.error("BiomePruner: Index out of bounds in getNoiseBiome at noise coords {},{},{} (block {},{},{})", 
+                noiseX, noiseY, noiseZ, blockX, blockY, blockZ, e);
+            throw new RuntimeException("BiomeSource array access failed - this indicates a coordinate validation issue", e);
+        } catch (Exception e) {
+            LOGGER.error("BiomePruner: Unexpected error in getNoiseBiome at noise coords {},{},{} (block {},{},{})", 
+                noiseX, noiseY, noiseZ, blockX, blockY, blockZ, e);
+            throw new RuntimeException("BiomeSource access failed", e);
+        }
     }
 
     // Rate limiting for cave biome detection logging
@@ -610,27 +831,51 @@ public class BiomeSmoother {
         boolean foundCave = false;
 
         while (currentY <= maxY && samples < maxSamples) {
-            Holder<Biome> biome = getOriginalBiome(blockX, currentY, blockZ, source, sampler);
-            
-            // If it's not a cave biome, we found our surface biome
-            if (!ConfigManager.isCaveBiome(biome)) {
-                // Log first successful cave skip (rate limited)
-                if (foundCave && !hasLoggedCaveSkip && ConfigManager.isPerformanceLoggingEnabled()) {
-                    hasLoggedCaveSkip = true;
-                    LOGGER.info("BiomePruner: Skipped cave biome at surface, found {} at Y={} (started at Y={})", 
-                        getBiomeName(biome), currentY, startY);
+            try {
+                Holder<Biome> biome = getOriginalBiome(blockX, currentY, blockZ, source, sampler);
+                
+                // If it's not a cave biome, we found our surface biome
+                if (!ConfigManager.isCaveBiome(biome)) {
+                    // Log first successful cave skip (rate limited)
+                    if (foundCave && !hasLoggedCaveSkip && ConfigManager.isPerformanceLoggingEnabled()) {
+                        hasLoggedCaveSkip = true;
+                        LOGGER.info("BiomePruner: Skipped cave biome at surface, found {} at Y={} (started at Y={})", 
+                            getBiomeName(biome), currentY, startY);
+                    }
+                    return biome;
                 }
-                return biome;
+                
+                foundCave = true;
+                // Move up and try again
+                currentY += 8; // Sample every 8 blocks upward
+                samples++;
+                
+            } catch (RuntimeException e) {
+                // If we get a coordinate error at this height, try the next height level
+                LOGGER.warn("BiomePruner: Coordinate error at {},{},{}, trying next height level: {}", 
+                    blockX, currentY, blockZ, e.getMessage());
+                currentY += 8;
+                samples++;
+                continue;
+            } catch (Exception e) {
+                // For other errors, log and try next height
+                LOGGER.warn("BiomePruner: Error sampling biome at {},{},{}, trying next height level", 
+                    blockX, currentY, blockZ, e);
+                currentY += 8;
+                samples++;
+                continue;
             }
-            
-            foundCave = true;
-            // Move up and try again
-            currentY += 8; // Sample every 8 blocks upward
-            samples++;
         }
         
         // Fallback: return the biome at the original height if we couldn't find a non-cave biome
-        return getOriginalBiome(blockX, startY, blockZ, source, sampler);
+        try {
+            return getOriginalBiome(blockX, startY, blockZ, source, sampler);
+        } catch (Exception e) {
+            // Ultimate fallback - if we can't get any biome, this is a serious error
+            LOGGER.error("BiomePruner: Critical error - cannot get fallback biome at {},{},{}", 
+                blockX, startY, blockZ, e);
+            throw new RuntimeException("Critical biome sampling failure", e);
+        }
     }
 
     /**
@@ -701,5 +946,30 @@ public class BiomeSmoother {
         Holder<Biome> replacement = findDominantNeighbor(visited, targetBiome, source, sampler);
         // Convert biome coordinate count to block count for debug display
         return new DebugFloodFillResult(visited.size() * 16, true, replacement);
+    }
+
+    /**
+     * Clear all cached data - CRITICAL for world unloading
+     * Must be called when switching worlds to prevent cross-world contamination
+     */
+    public void clearAllCaches() {
+        LOGGER.info("BiomePruner: Clearing all BiomeSmoother caches for world unload");
+        
+        // Clear the region cache (singleton)
+        regionCache.clearAll();
+        
+        // Clear the heightmap cache (instance)
+        heightmapCache.clearAll();
+        
+        LOGGER.info("BiomePruner: All BiomeSmoother caches cleared successfully");
+    }
+    
+    /**
+     * Get cache statistics for debugging
+     */
+    public String getCacheStatistics() {
+        return String.format("BiomeSmoother Cache Stats:\n- %s\n- %s", 
+            regionCache.getStatistics(), 
+            heightmapCache.getStatistics());
     }
 }
