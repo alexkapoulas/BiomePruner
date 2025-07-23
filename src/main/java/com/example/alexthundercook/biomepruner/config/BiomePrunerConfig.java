@@ -29,6 +29,7 @@ public class BiomePrunerConfig {
     public final ModConfigSpec.ConfigValue<List<? extends String>> excludedAsReplacement;
     public final ModConfigSpec.BooleanValue preserveOceanMonuments;
     public final ModConfigSpec.BooleanValue preserveVillageBiomes;
+    public final ModConfigSpec.ConfigValue<List<? extends String>> caveBiomes;
 
     // Performance settings
     public final ModConfigSpec.IntValue maxCacheMemoryMB;
@@ -97,6 +98,34 @@ public class BiomePrunerConfig {
         preserveVillageBiomes = builder
                 .comment("Treat village biomes specially - preserve small plains/desert/savanna/taiga/snowy patches")
                 .define("preserveVillageBiomes", true);
+
+        caveBiomes = builder
+                .comment("Biomes considered to be caves/underground. When detected at surface level, " +
+                         "sampling will continue upward to find the true surface biome.")
+                .defineList("caveBiomes",
+                        Arrays.asList(
+                                // Vanilla cave biomes
+                                "minecraft:deep_dark",
+                                "minecraft:dripstone_caves",
+                                "minecraft:lush_caves",
+                                // Terralith cave biomes
+                                "terralith:cave/andesite_caves",
+                                "terralith:cave/desert_caves",
+                                "terralith:cave/diorite_caves",
+                                "terralith:cave/fungal_caves",
+                                "terralith:cave/granite_caves",
+                                "terralith:cave/ice_caves",
+                                "terralith:cave/infested_caves",
+                                "terralith:cave/thermal_caves",
+                                "terralith:cave/underground_jungle",
+                                // Terralith deep cave biomes
+                                "terralith:cave/crystal_caves",
+                                "terralith:cave/deep_caves",
+                                "terralith:cave/frostfire_caves",
+                                "terralith:cave/mantle_caves",
+                                "terralith:cave/tuff_caves"
+                        ),
+                        obj -> obj instanceof String);
 
         builder.pop();
 

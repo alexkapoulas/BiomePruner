@@ -19,6 +19,7 @@ public class ConfigManager {
     // Processed biome sets for fast lookup
     private static final AtomicReference<Set<ResourceKey<Biome>>> preservedBiomes = new AtomicReference<>(new HashSet<>());
     private static final AtomicReference<Set<ResourceKey<Biome>>> excludedReplacements = new AtomicReference<>(new HashSet<>());
+    private static final AtomicReference<Set<ResourceKey<Biome>>> caveBiomes = new AtomicReference<>(new HashSet<>());
 
     /**
      * Initialize configuration manager
@@ -113,6 +114,18 @@ public class ConfigManager {
     }
 
     /**
+     * Check if a biome is considered a cave biome
+     */
+    public static boolean isCaveBiome(Holder<Biome> biomeHolder) {
+        if (!biomeHolder.isBound()) {
+            return false;
+        }
+
+        Optional<ResourceKey<Biome>> biomeKey = biomeHolder.unwrapKey();
+        return biomeKey.isPresent() && caveBiomes.get().contains(biomeKey.get());
+    }
+
+    /**
      * Update processed biome sets from config
      */
     private static void updateBiomeSets() {
@@ -142,8 +155,21 @@ public class ConfigManager {
         }
         excludedReplacements.set(excluded);
 
-        LOGGER.info("Loaded {} preserved biomes, {} excluded replacements",
-                preserved.size(), excluded.size());
+        // Parse cave biomes
+        Set<ResourceKey<Biome>> caves = new HashSet<>();
+        for (String biomeId : BiomePrunerConfig.INSTANCE.caveBiomes.get()) {
+            try {
+                ResourceLocation id = ResourceLocation.parse(biomeId);
+                ResourceKey<Biome> biomeKey = ResourceKey.create(net.minecraft.core.registries.Registries.BIOME, id);
+                caves.add(biomeKey);
+            } catch (Exception e) {
+                LOGGER.error("Invalid cave biome identifier: {}", biomeId, e);
+            }
+        }
+        caveBiomes.set(caves);
+
+        LOGGER.info("Loaded {} preserved biomes, {} excluded replacements, {} cave biomes",
+                preserved.size(), excluded.size(), caves.size());
     }
 
 }

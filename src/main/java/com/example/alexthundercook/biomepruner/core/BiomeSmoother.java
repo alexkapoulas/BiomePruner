@@ -107,8 +107,8 @@ public class BiomeSmoother {
         int surfaceY = heightmapCache.getHeight(x, z);
         if (heightTimer != null) heightTimer.close();
 
-        // Get biome at surface position
-        Holder<Biome> surfaceBiome = getOriginalBiome(x, surfaceY, z, source, sampler);
+        // Get biome at surface position, skipping cave biomes
+        Holder<Biome> surfaceBiome = getSurfaceBiome(x, z, surfaceY, source, sampler);
 
         // Only process if vanilla biome matches surface biome
         if (!vanillaBiome.equals(surfaceBiome)) {
@@ -198,10 +198,10 @@ public class BiomeSmoother {
                         Pos2D neighbor = new Pos2D(current.x() + dx, current.z() + dz);
 
                         if (!visited.contains(neighbor)) {
-                            // Get biome at neighbor surface position
+                            // Get biome at neighbor surface position, skipping cave biomes
                             int neighborY = heightmapCache.getHeight(neighbor.x(), neighbor.z());
-                            Holder<Biome> neighborBiome = getOriginalBiome(
-                                    neighbor.x(), neighborY, neighbor.z(), source, sampler);
+                            Holder<Biome> neighborBiome = getSurfaceBiome(
+                                    neighbor.x(), neighbor.z(), neighborY, source, sampler);
 
                             if (neighborBiome.equals(targetBiome)) {
                                 visited.add(neighbor);
@@ -256,8 +256,8 @@ public class BiomeSmoother {
 
                     if (!microBiomePositions.contains(neighbor)) {
                         int height = heightmapCache.getHeight(neighbor.x(), neighbor.z());
-                        Holder<Biome> neighborBiome = getOriginalBiome(
-                                neighbor.x(), height, neighbor.z(), source, sampler);
+                        Holder<Biome> neighborBiome = getSurfaceBiome(
+                                neighbor.x(), neighbor.z(), height, source, sampler);
 
                         // Always count for fallback
                         allNeighborCounts.merge(neighborBiome, 1, Integer::sum);
@@ -301,8 +301,8 @@ public class BiomeSmoother {
         // Get surface height
         int surfaceY = heightmapCache.getHeight(x, z);
         
-        // Get surface biome
-        Holder<Biome> surfaceBiome = getOriginalBiome(x, surfaceY, z, source, sampler);
+        // Get surface biome, skipping cave biomes
+        Holder<Biome> surfaceBiome = getSurfaceBiome(x, z, surfaceY, source, sampler);
         String surfaceBiomeName = getBiomeName(surfaceBiome);
         
         boolean matchesSurface = vanillaBiome.equals(surfaceBiome);
@@ -405,6 +405,46 @@ public class BiomeSmoother {
         return source.getNoiseBiome(blockX >> 2, blockY >> 2, blockZ >> 2, sampler);
     }
 
+    // Rate limiting for cave biome detection logging
+    private static volatile boolean hasLoggedCaveSkip = false;
+
+    /**
+     * Get surface biome at block coordinates, skipping cave biomes
+     * If a cave biome is found, keep sampling upward until a non-cave biome is found
+     */
+    private Holder<Biome> getSurfaceBiome(int blockX, int blockZ, int startY,
+                                          MultiNoiseBiomeSource source,
+                                          Climate.Sampler sampler) {
+        int currentY = startY;
+        int maxY = 320; // World height limit
+        int maxSamples = 20; // Prevent infinite loops
+        int samples = 0;
+        boolean foundCave = false;
+
+        while (currentY <= maxY && samples < maxSamples) {
+            Holder<Biome> biome = getOriginalBiome(blockX, currentY, blockZ, source, sampler);
+            
+            // If it's not a cave biome, we found our surface biome
+            if (!ConfigManager.isCaveBiome(biome)) {
+                // Log first successful cave skip (rate limited)
+                if (foundCave && !hasLoggedCaveSkip && ConfigManager.isPerformanceLoggingEnabled()) {
+                    hasLoggedCaveSkip = true;
+                    LOGGER.info("BiomePruner: Skipped cave biome at surface, found {} at Y={} (started at Y={})", 
+                        getBiomeName(biome), currentY, startY);
+                }
+                return biome;
+            }
+            
+            foundCave = true;
+            // Move up and try again
+            currentY += 8; // Sample every 8 blocks upward
+            samples++;
+        }
+        
+        // Fallback: return the biome at the original height if we couldn't find a non-cave biome
+        return getOriginalBiome(blockX, startY, blockZ, source, sampler);
+    }
+
     /**
      * Result of debug flood fill analysis
      */
@@ -442,10 +482,10 @@ public class BiomeSmoother {
                     Pos2D neighbor = new Pos2D(current.x() + dx, current.z() + dz);
 
                     if (!visited.contains(neighbor)) {
-                        // Get biome at neighbor surface position
+                        // Get biome at neighbor surface position, skipping cave biomes
                         int neighborY = heightmapCache.getHeight(neighbor.x(), neighbor.z());
-                        Holder<Biome> neighborBiome = getOriginalBiome(
-                                neighbor.x(), neighborY, neighbor.z(), source, sampler);
+                        Holder<Biome> neighborBiome = getSurfaceBiome(
+                                neighbor.x(), neighbor.z(), neighborY, source, sampler);
 
                         if (neighborBiome.equals(targetBiome)) {
                             visited.add(neighbor);
